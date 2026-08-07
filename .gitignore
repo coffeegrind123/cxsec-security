@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# install.sh moves replaced directories aside before re-vendoring
+*.bak.*
+
+# generated scan output — never commit findings or reports
+scan-context.json
+candidates.jsonl
+report.md
+exports/
+
+.DS_Store

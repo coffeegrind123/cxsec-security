@@ -1,0 +1,55 @@
+cxsec-security
+Copyright 2026 the cxsec-security contributors
+
+This product includes software and documentation derived from
+codex-security (https://github.com/openai/codex-security),
+Copyright OpenAI, licensed under the Apache License, Version 2.0.
+
+Derived from upstream plugin version 0.1.15, commit
+0facad0b2bda57d845ae22f8b87584ddd716ffba, source path
+sdk/typescript/_bundled_plugin.
+
+Modifications made to the upstream work
+---------------------------------------
+
+Documentation and skill definitions (SKILL.md, references/):
+
+  * The 13 upstream skills were consolidated into one router skill. Top-level
+    skills became references/mode-*.md; the four phase skills became
+    references/phase-*.md. Their frontmatter was converted to HTML comments.
+  * All reference paths were flattened into a single references/ namespace.
+  * <plugin_dir> / <plugin-root> were replaced with $CXSEC_HOME.
+  * All 143 upstream MCP tool references were converted to file operations. The
+    mapping is documented in references/workbench-file-protocol.md; discovery,
+    validation and attack-path state moved to candidates.jsonl plus per-candidate
+    candidate_ledger.jsonl receipts.
+  * Codex app links were replaced with instructions to verify that a connected
+    MCP server exposes the required tools.
+  * Product branding was removed from prose so mode selection does not depend on
+    an absent product.
+  * references/hard-rules.md is upstream references/shared-hard-rules.md, renamed
+    and edited to cover repository scans alongside diff, deep and resumed scans.
+
+Runtime code (runtime/):
+
+  * assets/0001-rebrand-sarif-output.patch renames five cosmetic SARIF branding
+    sites in scripts/finalize_scan_contract.py: tool.driver.name, the
+    partialFingerprints namespace, and three run.properties keys. Generated SARIF
+    is attributed to cxsec-security.
+  * No other functional change. Canonical wire literals (codex-security.*
+    documentTypes, the codex-security/v1 fingerprint algorithm, and the
+    codex-security-snapshot/v1 digest prefix) are deliberately unchanged so that
+    genuine upstream artifacts remain ingestible.
+
+Not included from upstream
+--------------------------
+
+  * mcp/server.mjs (the MCP server)
+  * the Codex-CLI-driven deep-security-scan worker fan-out
+  * agents/openai.yaml
+
+Additions original to this work
+-------------------------------
+
+  * scripts/install.sh, assets/, references/install.md,
+    references/workbench-file-protocol.md, README.md, and this NOTICE.
