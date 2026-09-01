@@ -55,6 +55,32 @@ def measured_scan_cost_json(usage: Mapping[str, Any]) -> str:
     return json.dumps({"usage": dict(usage)}, separators=(",", ":"), allow_nan=False)
 
 
+def reconcile_completed_scan_cost(
+    connection: sqlite3.Connection,
+    scan: sqlite3.Row,
+    cost_json: str,
+) -> None:
+    """Persist authoritative SDK cost without discarding measured worker usage."""
+
+    existing = json.loads(scan["cost_json"]) if scan["cost_json"] is not None else {}
+    if isinstance(existing, dict) and "usage" in existing:
+        cost_json = json.dumps(
+            {**existing, "cost": json.loads(cost_json)},
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        connection.execute(
+            "UPDATE scans SET cost_json = ? WHERE id = ? AND status = 'complete'",
+            (cost_json, scan["id"]),
+        )
+        connection.commit()
+    except BaseException:
+        connection.rollback()
+        raise
+
+
 def collect_scan_usage(
     connection: sqlite3.Connection,
     scan: sqlite3.Row,
@@ -497,12 +523,23 @@ def _token_snapshot(payload: Mapping[str, Any]) -> dict[str, int] | None:
     usage = info.get("total_token_usage")
     if not isinstance(usage, dict):
         return None
+    cache_write = usage.get("cache_write_input_tokens", usage.get("cache_write_tokens", 0))
+    legacy_cache_write = usage.get("cache_write_tokens")
+    input_tokens = usage.get("input_tokens")
+    cached_input_tokens = usage.get("cached_input_tokens", 0)
+    if (
+        cache_write == 0
+        and type(legacy_cache_write) is int
+        and legacy_cache_write > 0
+        and type(input_tokens) is int
+        and type(cached_input_tokens) is int
+        and cached_input_tokens + legacy_cache_write <= input_tokens
+    ):
+        cache_write = legacy_cache_write
     result: dict[str, int] = {}
     for source_key, result_key in TOKEN_FIELDS.items():
         value = (
-            usage.get(source_key, usage.get("cache_write_tokens", 0))
-            if source_key == "cache_write_input_tokens"
-            else usage.get(source_key, 0)
+            cache_write if source_key == "cache_write_input_tokens" else usage.get(source_key, 0)
         )
         if type(value) is not int or value < 0:
             return None

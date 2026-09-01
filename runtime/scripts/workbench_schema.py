@@ -1,6 +1,7 @@
 """SQLite schema history for the Codex Security workbench."""
 
 import argparse
+import json
 import sqlite3
 from collections.abc import Callable
 
@@ -635,7 +636,265 @@ MIGRATIONS = (
         SET stop_after_consecutive_errors = stop_after_no_new;
         """,
     ),
+    (
+        28,
+        "persist deep scan discovery time limit",
+        """
+        ALTER TABLE deep_scan_runs
+        ADD COLUMN max_time_hours REAL NOT NULL DEFAULT 96;
+        """,
+    ),
+    (
+        29,
+        "persist finding publication associations",
+        """
+        CREATE TABLE finding_publications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scan_id TEXT NOT NULL REFERENCES scans(id) ON DELETE CASCADE,
+            finding_id TEXT NOT NULL REFERENCES findings(id),
+            occurrence_id TEXT NOT NULL
+                REFERENCES finding_occurrences(id) ON DELETE CASCADE,
+            destination_type TEXT NOT NULL,
+            team_id TEXT,
+            project_id TEXT,
+            external_id TEXT NOT NULL,
+            external_url TEXT,
+            created_at TEXT NOT NULL,
+            UNIQUE (occurrence_id, destination_type, team_id, project_id, external_id),
+            UNIQUE (destination_type, team_id, project_id, external_id)
+        );
+
+        CREATE INDEX finding_publications_by_scan
+        ON finding_publications(scan_id, occurrence_id, id);
+
+        CREATE INDEX finding_publications_by_finding
+        ON finding_publications(finding_id, id);
+        """,
+    ),
+    (
+        30,
+        "preserve team-only finding publication associations",
+        """
+        CREATE UNIQUE INDEX finding_publications_team_only_occurrence
+        ON finding_publications(occurrence_id, destination_type, team_id, external_id)
+        WHERE project_id IS NULL;
+
+        CREATE UNIQUE INDEX finding_publications_team_only_external_issue
+        ON finding_publications(destination_type, team_id, external_id)
+        WHERE project_id IS NULL;
+        """,
+    ),
+    (
+        31,
+        "freeze stopped scan source digests",
+        """
+        ALTER TABLE scans ADD COLUMN retained_source_digests_json TEXT;
+        """,
+    ),
+    (
+        32,
+        "separate deep scan publication failures",
+        """
+        ALTER TABLE deep_scan_runs ADD COLUMN publication_error_message TEXT;
+        """,
+    ),
+    (
+        33,
+        "store complete findings and embeddings without a scan",
+        """
+        ALTER TABLE findings ADD COLUMN details_json TEXT;
+
+        UPDATE findings SET details_json = (
+            SELECT details_json FROM finding_occurrences
+            WHERE finding_id = findings.id AND details_json != '{}'
+            ORDER BY created_at DESC, id DESC LIMIT 1
+        );
+
+        CREATE TABLE finding_embeddings (
+            finding_id TEXT PRIMARY KEY REFERENCES findings(id) ON DELETE CASCADE,
+            model TEXT NOT NULL,
+            vector_json TEXT NOT NULL
+        );
+
+        CREATE TRIGGER invalidate_finding_embedding
+        AFTER UPDATE OF details_json ON findings
+        WHEN OLD.details_json IS NOT NEW.details_json
+        BEGIN
+            DELETE FROM finding_embeddings WHERE finding_id = NEW.id;
+        END;
+        """,
+    ),
+    (
+        34,
+        "associate findings with repositories",
+        """
+        CREATE TABLE finding_repositories (
+            repository_id TEXT NOT NULL,
+            finding_id TEXT NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
+            PRIMARY KEY (repository_id, finding_id)
+        );
+
+        INSERT OR IGNORE INTO finding_repositories (repository_id, finding_id)
+        SELECT scans.target_id, finding_occurrences.finding_id
+        FROM finding_occurrences JOIN scans ON scans.id = finding_occurrences.scan_id
+        WHERE scans.target_id IS NOT NULL;
+        """,
+    ),
+    (
+        35,
+        "persist finding dedupe groups",
+        """
+        CREATE TABLE finding_dedupe_groups (
+            id TEXT PRIMARY KEY,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE finding_dedupe_group_members (
+            group_id TEXT NOT NULL REFERENCES finding_dedupe_groups(id) ON DELETE CASCADE,
+            finding_id TEXT NOT NULL REFERENCES findings(id),
+            PRIMARY KEY (group_id, finding_id)
+        );
+
+        CREATE INDEX finding_dedupe_groups_by_finding
+        ON finding_dedupe_group_members(finding_id, group_id);
+        """,
+    ),
+    (
+        36,
+        "persist local findings workflows",
+        """
+        CREATE TABLE finding_workflows (
+            id TEXT PRIMARY KEY,
+            state_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        """,
+    ),
+    (
+        37,
+        "checkpoint validated dedupe reviews",
+        """
+        CREATE TABLE finding_workflow_reviews (
+            workflow_id TEXT NOT NULL REFERENCES finding_workflows(id) ON DELETE CASCADE,
+            review_key TEXT NOT NULL,
+            binding_json TEXT NOT NULL,
+            result_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (workflow_id, review_key)
+        );
+        """,
+    ),
+    (
+        38,
+        "store findings workflow metadata in columns",
+        """
+        ALTER TABLE finding_workflows RENAME COLUMN state_json TO results_json;
+        ALTER TABLE finding_workflows ADD COLUMN repository_path TEXT;
+        ALTER TABLE finding_workflows ADD COLUMN scan_request_digest TEXT;
+        ALTER TABLE finding_workflows ADD COLUMN scan_id TEXT;
+        ALTER TABLE finding_workflows ADD COLUMN scan_dir TEXT;
+        ALTER TABLE finding_workflows ADD COLUMN artifact_digest TEXT;
+        ALTER TABLE finding_workflows ADD COLUMN destination TEXT;
+        ALTER TABLE finding_workflows ADD COLUMN scope_repository_id TEXT;
+        ALTER TABLE finding_workflows ADD COLUMN scope_all_repositories INTEGER;
+        ALTER TABLE finding_workflows ADD COLUMN scan_status TEXT NOT NULL DEFAULT 'pending';
+        ALTER TABLE finding_workflows ADD COLUMN scan_error TEXT;
+        ALTER TABLE finding_workflows ADD COLUMN publish_status TEXT NOT NULL DEFAULT 'pending';
+        ALTER TABLE finding_workflows ADD COLUMN publish_error TEXT;
+        ALTER TABLE finding_workflows ADD COLUMN dedupe_status TEXT NOT NULL DEFAULT 'pending';
+        ALTER TABLE finding_workflows ADD COLUMN dedupe_error TEXT;
+        """,
+    ),
+    (
+        39,
+        "store dedupe checkpoint bindings in columns",
+        """
+        ALTER TABLE finding_workflow_reviews RENAME COLUMN binding_json TO prompt_digest;
+        ALTER TABLE finding_workflow_reviews ADD COLUMN review_contract_version INTEGER;
+        ALTER TABLE finding_workflow_reviews ADD COLUMN codex_version TEXT;
+        ALTER TABLE finding_workflow_reviews ADD COLUMN source_repository_path TEXT;
+        ALTER TABLE finding_workflow_reviews ADD COLUMN source_revision TEXT;
+        ALTER TABLE finding_workflow_reviews ADD COLUMN source_refs_digest TEXT;
+        ALTER TABLE finding_workflow_reviews ADD COLUMN source_content_digest TEXT;
+        ALTER TABLE finding_workflow_reviews ADD COLUMN scope_repository_id TEXT;
+        ALTER TABLE finding_workflow_reviews ADD COLUMN scope_all_repositories INTEGER;
+        ALTER TABLE finding_workflow_reviews ADD COLUMN model TEXT;
+        ALTER TABLE finding_workflow_reviews ADD COLUMN effort TEXT;
+        ALTER TABLE finding_workflow_reviews ADD COLUMN settings_digest TEXT;
+        ALTER TABLE finding_workflow_reviews ADD COLUMN contract_digest TEXT;
+        """,
+    ),
 )
+
+
+def migrate_finding_workflow_review_columns(connection: sqlite3.Connection) -> None:
+    for row in connection.execute(
+        "SELECT workflow_id, review_key, prompt_digest FROM finding_workflow_reviews"
+    ).fetchall():
+        binding = json.loads(row["prompt_digest"])
+        source = binding["source"]
+        scope = binding["scope"]
+        connection.execute(
+            """UPDATE finding_workflow_reviews SET review_contract_version = ?, codex_version = ?,
+            source_repository_path = ?, source_revision = ?, source_refs_digest = ?,
+            source_content_digest = ?, scope_repository_id = ?, scope_all_repositories = ?,
+            model = ?, effort = ?, settings_digest = ?, prompt_digest = ?, contract_digest = ?
+            WHERE workflow_id = ? AND review_key = ?""",
+            (
+                binding["version"],
+                binding["codexVersion"],
+                source["repository"],
+                source["revision"],
+                source["refsDigest"],
+                source["content"],
+                scope.get("repositoryId"),
+                scope.get("allRepositories"),
+                binding["model"],
+                binding["effort"],
+                binding.get("settingsDigest"),
+                binding["promptDigest"],
+                binding["contractDigest"],
+                row["workflow_id"],
+                row["review_key"],
+            ),
+        )
+
+
+def migrate_finding_workflow_columns(connection: sqlite3.Connection) -> None:
+    # Rename/backfill in place so existing checkpoint foreign keys and rows survive.
+    for row in connection.execute("SELECT id, results_json FROM finding_workflows").fetchall():
+        state = json.loads(row["results_json"])
+        scope = state.get("scope", {})
+        stages = state["stages"]
+        results = {stage: value["result"] for stage, value in stages.items() if "result" in value}
+        if "pendingWrite" in stages["dedupe"]:
+            results["dedupePendingWrite"] = stages["dedupe"]["pendingWrite"]
+        connection.execute(
+            """UPDATE finding_workflows SET
+            repository_path = ?, scan_request_digest = ?, scan_id = ?, scan_dir = ?,
+            artifact_digest = ?, destination = ?, scope_repository_id = ?, scope_all_repositories = ?,
+            scan_status = ?, scan_error = ?, publish_status = ?, publish_error = ?,
+            dedupe_status = ?, dedupe_error = ?, results_json = ? WHERE id = ?""",
+            (
+                state.get("repositoryPath"),
+                state.get("scanRequestDigest"),
+                state.get("scanId"),
+                state.get("scanDir"),
+                state.get("artifactDigest"),
+                state.get("destination"),
+                scope.get("repositoryId"),
+                scope.get("allRepositories"),
+                stages["scan"]["status"],
+                stages["scan"].get("error"),
+                stages["publish"]["status"],
+                stages["publish"].get("error"),
+                stages["dedupe"]["status"],
+                stages["dedupe"].get("error"),
+                json.dumps(results, allow_nan=False),
+                row["id"],
+            ),
+        )
 
 
 def apply_migrations(
@@ -689,6 +948,27 @@ def apply_migrations(
                         "completion_warnings_json",
                         "TEXT NOT NULL DEFAULT '[]'",
                     )
+                elif version == 28:
+                    add_column_if_missing(
+                        connection,
+                        "deep_scan_runs",
+                        "max_time_hours",
+                        "REAL NOT NULL DEFAULT 96",
+                    )
+                elif version == 31:
+                    add_column_if_missing(
+                        connection,
+                        "scans",
+                        "retained_source_digests_json",
+                        "TEXT",
+                    )
+                elif version == 32:
+                    add_column_if_missing(
+                        connection,
+                        "deep_scan_runs",
+                        "publication_error_message",
+                        "TEXT",
+                    )
                 continue
             if version == 6:
                 repair_thread_scoped_workspaces_migration(connection)
@@ -697,6 +977,10 @@ def apply_migrations(
             else:
                 for statement in sql_statements(sql):
                     connection.execute(statement)
+                if version == 38:
+                    migrate_finding_workflow_columns(connection)
+                elif version == 39:
+                    migrate_finding_workflow_review_columns(connection)
             connection.execute(
                 "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
                 (version, name, now()),
@@ -714,79 +998,64 @@ def apply_migrations(
 def normalize_pre_release_execution_profile_migrations(
     connection: sqlite3.Connection, timestamp: str
 ) -> None:
+    scan_columns = {row["name"] for row in connection.execute("PRAGMA table_info(scans)")}
+    workspace_columns = {row["name"] for row in connection.execute("PRAGMA table_info(workspaces)")}
+    legacy_columns = {"execution_model", "reasoning_effort"}
+    renamed_columns = {
+        "legacy_execution_model",
+        "legacy_reasoning_effort",
+    }
     execution_migrations = {
         row["version"]: row["name"]
         for row in connection.execute(
-            "SELECT version, name FROM schema_migrations WHERE version IN (11, 12, 25, 26)"
+            "SELECT version, name FROM schema_migrations WHERE version IN (11, 12, 25)"
         )
     }
-    legacy_names = {
-        11: "scan execution profiles",
-        12: "dynamic scan execution profiles",
-    }
-    released_names = {
-        11: "deep scan orchestration state",
-        12: "scan continuation threads",
+    supported_execution_migrations = {
+        11: {"deep scan orchestration state", "scan execution profiles"},
+        12: {
+            "scan continuation threads",
+            "scan execution profiles",
+            "dynamic scan execution profiles",
+        },
     }
     model_migration_name = "persist scan model settings"
-    warnings_migration_name = "persist scan completion warnings"
     if execution_migrations.get(25) == "dynamic scan execution profiles":
         connection.execute(
             "UPDATE schema_migrations SET name = ? WHERE version = 25 AND name = ?",
             (model_migration_name, "dynamic scan execution profiles"),
         )
         execution_migrations[25] = model_migration_name
-    has_legacy_profile_history = execution_migrations.get(11) == legacy_names[11]
-    has_public_warnings_history = (
-        execution_migrations.get(25) == warnings_migration_name
+    has_legacy_profile_history = any(
+        execution_migrations.get(version) in legacy_names
+        for version, legacy_names in (
+            (11, {"scan execution profiles"}),
+            (12, {"scan execution profiles", "dynamic scan execution profiles"}),
+        )
     )
-
-    scan_columns = {
-        row["name"] for row in connection.execute("PRAGMA table_info(scans)")
-    }
-    workspace_columns = {
-        row["name"] for row in connection.execute("PRAGMA table_info(workspaces)")
-    }
-    has_legacy_profile_columns = (
-        "execution_model" in scan_columns or "execution_model" in workspace_columns
+    has_legacy_profile_columns = any(
+        column in columns
+        for column, columns in (
+            ("execution_model", scan_columns),
+            ("execution_model", workspace_columns),
+            ("reasoning_effort", workspace_columns),
+        )
     )
-    if not (
-        has_legacy_profile_history
-        or has_public_warnings_history
-        or has_legacy_profile_columns
-    ):
+    if not (has_legacy_profile_history or has_legacy_profile_columns):
         return
 
-    if (
-        any(
-            execution_migrations.get(version)
-            not in (None, released_names[version], legacy_names[version])
-            for version in (11, 12)
-        )
-        or (
-            has_legacy_profile_history
-            and execution_migrations.get(12)
-            not in (None, legacy_names[12], released_names[12])
-        )
-        or (
-            not has_legacy_profile_history
-            and execution_migrations.get(12) == legacy_names[12]
-        )
+    if any(
+        execution_migrations.get(version) not in ({None} | supported_names)
+        for version, supported_names in supported_execution_migrations.items()
     ):
         raise SystemExit(
             "The Codex Security database has an unsupported execution-profile migration history."
         )
 
-    expected_legacy_columns = {"execution_model", "reasoning_effort"}
-    renamed_legacy_columns = {
-        "legacy_execution_model",
-        "legacy_reasoning_effort",
-    }
-    if has_legacy_profile_columns and (
-        not expected_legacy_columns.issubset(scan_columns)
-        or not expected_legacy_columns.issubset(workspace_columns)
-        or renamed_legacy_columns.intersection(scan_columns)
-        or renamed_legacy_columns.intersection(workspace_columns)
+    if has_legacy_profile_columns and not (
+        legacy_columns <= scan_columns
+        and legacy_columns <= workspace_columns
+        and not renamed_columns.intersection(scan_columns | workspace_columns)
     ):
         raise SystemExit(
             "The Codex Security database has an unsupported execution-profile migration history."
@@ -796,17 +1065,6 @@ def normalize_pre_release_execution_profile_migrations(
             "The Codex Security database has an unsupported execution-profile migration history."
         )
 
-    if has_public_warnings_history:
-        if execution_migrations.get(26) is not None:
-            raise SystemExit(
-                "The Codex Security database has an unsupported pre-release migration history."
-            )
-        connection.execute(
-            "UPDATE schema_migrations SET version = 26 WHERE version = 25 AND name = ?",
-            (warnings_migration_name,),
-        )
-        execution_migrations.pop(25)
-
     if execution_migrations.get(25) not in (None, model_migration_name):
         raise SystemExit(
             "The Codex Security database has an unsupported execution-profile migration history."
@@ -814,7 +1072,7 @@ def normalize_pre_release_execution_profile_migrations(
 
     # Keep the historical values and constraints for recovery while moving
     # them out of the namespace used by the current independent scan settings.
-    for table in ("workspaces", "scans") if has_legacy_profile_columns else ():
+    for table in ("workspaces", "scans"):
         connection.execute(
             f"ALTER TABLE {table} RENAME COLUMN execution_model TO legacy_execution_model"
         )
@@ -823,22 +1081,22 @@ def normalize_pre_release_execution_profile_migrations(
         )
     add_column_if_missing(connection, "scans", "model", "TEXT")
     add_column_if_missing(connection, "scans", "reasoning_effort", "TEXT")
-    if has_legacy_profile_columns:
+    connection.execute(
+        """
+        UPDATE scans
+        SET model = COALESCE(model, legacy_execution_model),
+            reasoning_effort = COALESCE(reasoning_effort, legacy_reasoning_effort)
+        """
+    )
+    for version, name in (
+        (11, "scan execution profiles"),
+        (12, "scan execution profiles"),
+        (12, "dynamic scan execution profiles"),
+    ):
         connection.execute(
-            """
-            UPDATE scans
-            SET model = COALESCE(model, legacy_execution_model),
-                reasoning_effort = legacy_reasoning_effort
-            WHERE legacy_execution_model IS NOT NULL
-                OR legacy_reasoning_effort IS NOT NULL
-            """
+            "DELETE FROM schema_migrations WHERE version = ? AND name = ?",
+            (version, name),
         )
-    if has_legacy_profile_history:
-        for version, name in legacy_names.items():
-            connection.execute(
-                "DELETE FROM schema_migrations WHERE version = ? AND name = ?",
-                (version, name),
-            )
     if execution_migrations.get(25) is None:
         connection.execute(
             "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
@@ -847,6 +1105,8 @@ def normalize_pre_release_execution_profile_migrations(
 
 
 def normalize_pre_release_migrations(connection: sqlite3.Connection, timestamp: str) -> None:
+    normalize_mirror_lineage_migrations(connection)
+
     completion_warning_migration = connection.execute(
         "SELECT name FROM schema_migrations WHERE version = 25"
     ).fetchone()
@@ -1071,6 +1331,28 @@ def normalize_pre_release_migrations(connection: sqlite3.Connection, timestamp: 
         "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
         (2, "persist capability preflight summaries", timestamp),
     )
+
+
+def normalize_mirror_lineage_migrations(connection: sqlite3.Connection) -> None:
+    mirror_names = {
+        29: "freeze stopped scan source digests",
+        30: "separate deep scan publication failures",
+    }
+    migrations = {
+        row["version"]: row["name"]
+        for row in connection.execute(
+            "SELECT version, name FROM schema_migrations WHERE version BETWEEN 29 AND 32"
+        )
+    }
+    if not any(migrations.get(version) == name for version, name in mirror_names.items()):
+        return
+    if migrations != mirror_names:
+        raise SystemExit("The Codex Security database has an unsupported mirror migration history.")
+    for old_version, new_version in ((30, 32), (29, 31)):
+        connection.execute(
+            "UPDATE schema_migrations SET version = ? WHERE version = ? AND name = ?",
+            (new_version, old_version, mirror_names[old_version]),
+        )
 
 
 def repair_deep_scan_migration(connection: sqlite3.Connection) -> None:

@@ -13,9 +13,11 @@ If the user explicitly provides a different path for a required input or output,
 If a required input is still missing, stop and ask the user for it before continuing.
 Use the shared scan artifact path conventions in `scan-artifacts.md`.
 
-### Compact Standard-Scan Mode
+Repository scans (mode 1) and deep-scan rounds (mode 3) validate findings inside their own `core-scan.md` audit; neither invokes this phase.
 
-When ``mode-repo-scan.md`` or ``mode-deep-scan.md`` explicitly invokes this skill in compact standard-scan mode, read the full candidate set from `<discovery_dir>/candidates.jsonl`. Apply the validation method and evidence rules in this skill to every candidate in one invocation. Append exactly one `validation` receipt per candidate to `<findings_dir>/<candidate_id>/candidate_ledger.jsonl`, using the receipt shape in `workbench-file-protocol.md` and preserving every discovery field and the candidate order from `candidates.jsonl`.
+### Compact Diff Mode
+
+When ``mode-diff-scan.md`` explicitly invokes this skill in compact diff mode, read the full candidate set from `<discovery_dir>/candidates.jsonl`. Apply the validation method and evidence rules in this skill to every candidate in one invocation. Append exactly one `validation` receipt per candidate to `<findings_dir>/<candidate_id>/candidate_ledger.jsonl`, using the receipt shape in `workbench-file-protocol.md` and preserving every discovery field and the candidate order from `candidates.jsonl`.
 
 In this mode, the tool atomically records the nested validation in place of a per-finding validation report, receipt, or closure table. Submit all candidate validations together; submit `validations: []` when the candidate set is empty. Create `<discovery_dir>/validation_artifacts/<candidate_id>/` only when validation produces an actual PoC, crafted input, or log, and reference it from the nested record. All validation reasoning, instance-preservation, evidence, and confidence requirements still apply; only the artifact packaging changes.
 
@@ -38,8 +40,8 @@ In this mode, the tool atomically records the nested validation in place of a pe
 6. Save any PoC files, inputs, or logs under the validation artifacts path for the active mode from `scan-artifacts.md`.
 7. If validation is not feasible, document what was tried, what remains uncertain, and the exact proof gap.
 8. Return a clear validation assessment per finding grounded in the evidence, proof gaps, and remaining uncertainty.
-9. In compact standard-scan mode, append the `validation` receipt for every candidate to its `<findings_dir>/<candidate_id>/candidate_ledger.jsonl` in one pass after all candidates are decided.
-10. Outside compact standard-scan mode, save that finding's visible validation report and append one validation receipt per candidate id at the default paths from `scan-artifacts.md`. The receipt must record the validation method, evidence or exact proof gap, disposition, and validation artifact/report reference for that candidate finding.
+9. In compact diff mode, append the `validation` receipt for every candidate to its `<findings_dir>/<candidate_id>/candidate_ledger.jsonl` in one pass after all candidates are decided.
+10. Outside compact diff mode, save that finding's visible validation report and append one validation receipt per candidate id at the default paths from `scan-artifacts.md`. The receipt must record the validation method, evidence or exact proof gap, disposition, and validation artifact/report reference for that candidate finding.
 
 ## Usage Guidance
 
@@ -55,9 +57,9 @@ When validation falls back to static code understanding, or when static evidence
 
 ## Output Contract
 
-In compact standard-scan mode, append the receipt shape defined in `workbench-file-protocol.md` to each candidate's ledger. Every input candidate must receive exactly one validation disposition. The recorded result is the phase closure; do not also create a narrative report or receipt.
+In compact diff mode, append the receipt shape defined in `workbench-file-protocol.md` to each candidate's ledger. Every input candidate must receive exactly one validation disposition. The recorded result is the phase closure; do not also create a narrative report or receipt.
 
-Outside compact standard-scan mode, use the following report contract.
+Outside compact diff mode, use the following report contract.
 
 For each candidate finding, include:
 
@@ -91,7 +93,7 @@ For repository-wide and scoped-path scans, also include a validation closure tab
 ## Hard Rules
 
 - Do not imply validation happened when it did not.
-- Do not leave candidate coverage implicit. In compact standard-scan mode, every candidate must receive a nested `validation` record. In other modes, every candidate that enters validation must leave a validation receipt in its candidate-ledger path from `scan-artifacts.md`, even when the result is suppressed, uncertain, or deferred.
+- Do not leave candidate coverage implicit. In compact diff mode, every candidate must receive a nested `validation` record. In other modes, every candidate that enters validation must leave a validation receipt in its candidate-ledger path from `scan-artifacts.md`, even when the result is suppressed, uncertain, or deferred.
 - Prefer realistic local reproduction paths over contrived setups.
 - If a finding depends on missing product assumptions, state the question clearly instead of fabricating the answer.
 - Keep commands short, bounded, and non-interactive.
@@ -100,7 +102,7 @@ For repository-wide and scoped-path scans, also include a validation closure tab
 - Keep validation artifacts and phase output in the paths for the active mode from `scan-artifacts.md` so the full scan bundle lives together. Compact standard scans do not create per-finding validation reports.
 - Make a serious, bounded effort to get runtime validation working when it would materially change reportability, confidence, or severity. Consult repository guidance such as `AGENTS.md`, `README.md`, setup docs, test docs, build files, and package-manager metadata to identify the required dependencies, generated files, services, and setup steps.
 - For scans that should not modify the target tree, use a disposable copy or generated-artifact directory under the validation artifacts path for the active mode for builds, generated clients, patched test harnesses, and PoC files. A no-edit target rule does not forbid output-only build copies when they are needed to validate the original code.
-- For repository-wide and scoped-path scans outside compact standard-scan mode, update each affected finding's validation report and closure table as each reportable, suppressed, not_applicable, or deferred row is decided. In compact standard-scan mode, append every validation receipt in one pass after deciding all candidates. Do not leave validated candidates only in transient notes, terminal logs, or validation artifacts; later phases must be able to reconstruct every disposition from the durable phase output.
+- For repository-wide and scoped-path scans outside compact diff mode, update each affected finding's validation report and closure table as each reportable, suppressed, not_applicable, or deferred row is decided. In compact diff mode, append every validation receipt in one pass after deciding all candidates. Do not leave validated candidates only in transient notes, terminal logs, or validation artifacts; later phases must be able to reconstruct every disposition from the durable phase output.
 - For large repository-wide scans, keep setup/build/debug effort proportionate to the candidate and the remaining high-impact coverage ledger. Do not spend the review budget trying to fully reproduce one internal service when static trace, existing tests, and deploy/config evidence are enough to validate or suppress the candidate.
 - In repository-wide and scoped-path validation, once one candidate in a repeated high-impact pattern has a strong proof tuple, switch to sibling candidates from the coverage ledger and validate each by checking the same source, closest control, sink, and impact. Only continue deeper runtime work when it would materially change reportability, severity, or confidence.
 - If a repository-wide shard has a promoted same-family finding plus unresolved seeded or root-control rows, close those sibling rows next as reportable, suppressed, or deferred before replacing the review with a more dramatic neighboring finding. Representative proof improves confidence, but it does not close sibling root controls without exact counterevidence.

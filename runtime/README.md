@@ -8,14 +8,16 @@ Apache-2.0. See `PROVENANCE.md` for the exact upstream version and commit.
 
 **This runtime** (`~/.claude/codex-security`, referred to as `$CXSEC_HOME`):
 
-- `scripts/` — 34 stdlib-only Python helpers. No pip install, no network calls,
-  no OpenAI credentials.
-- `schemas/` — 12 JSON Schemas for the scan contract.
-- `references/` — the full upstream shared reference set, including
-  `validation-guidance.md`-adjacent material kept for the skills still to be ported.
+- `scripts/` — 39 stdlib-only Python helpers, including the `workbench/`
+  subpackage. No pip install, no network calls, no OpenAI credentials. Python 3.11+
+  (`tomllib`).
+- `schemas/` — 13 JSON Schemas for the scan contract and patch-risk assessment.
+- `references/` — the full upstream shared reference set.
 - `preflight/capability-profiles.toml` — capability gate definitions.
 - `examples/completed-scan/` — upstream example artifacts, used as the installer's
   end-to-end smoke fixture.
+- `skills/assess-patch-risk/scripts/` — mode 10's assessment validator, kept at
+  its upstream depth because it resolves the plugin root as `parents[3]`.
 
 Install, repair, or verify this runtime with the skill's installer:
 `bash ~/.claude/skills/cxsec-security/scripts/install.sh [--check|--force]`.
@@ -23,7 +25,7 @@ It vendors the pinned upstream tree, re-applies the SARIF rebrand patch, and pro
 the result by finalizing the example scan. See `references/install.md` in the skill.
 
 **One skill** at `~/.claude/skills/cxsec-security/` — a router `SKILL.md` (~2k tok)
-plus 36 on-demand reference files (~105k tok total, loaded per mode):
+plus 38 on-demand reference files, loaded per mode:
 
 | # | Mode | Reference |
 |---|---|---|
@@ -36,8 +38,10 @@ plus 36 on-demand reference files (~105k tok total, loaded per mode):
 | 7 | Author/review `SECURITY.md` | `mode-policy.md` |
 | 8 | File findings (Linear/Jira/GitHub) | `mode-track.md` |
 | 9 | Structural hardening | `mode-harden.md` |
+| 10 | Patch merge-risk assessment | `mode-patch-risk.md` |
 
-Modes 1–3 invoke `phase-1-threat-model.md` → `phase-2-discovery.md` →
+Modes 1 and 3 perform the single self-contained audit in `core-scan.md`. Mode 2
+invokes `phase-1-threat-model.md` → `phase-2-discovery.md` →
 `phase-3-validation.md` → `phase-4-attack-path.md` internally. Phase files are
 never entry points.
 
@@ -76,10 +80,11 @@ import workbench_target as wt
 print(wt.worktree_content_digest(Path('<repo_root>')))"
 ```
 
-Related helpers: `validate_scan_contract.py` (check without sealing),
-`validate_report_format.py --report-md <path>`, `resolve_security_md.py`,
+Related helpers: `validate_scan_contract.py --scan-dir <dir>` (re-validate a
+sealed bundle without mutating it — upstream retired `validate_report_format.py`
+in favour of this), `report_projection.py`, `resolve_security_md.py`,
 `validate_tracking_source.py`, `generate_rank_input.py`,
-`generate_in_scope_files.py`.
+`generate_in_scope_files.py`, `deep_scan_config.py`.
 
 ## Capability preflight
 
@@ -100,17 +105,20 @@ is `suggest`, not `block`.
 
 ## Deliberately not ported
 
-- **The upstream MCP server** (`mcp/server.mjs`). It is a local SQLite scan-state
+- **The upstream MCP server** (`mcp-app/`). It is a local SQLite scan-state
   workbench, not a service client, and it runs without credentials — but its
   scan-start tools require a Codex thread id in MCP `_meta`, which Claude Code does
   not send. The Python layer reaches the same state directly, so the server adds
   nothing here. All 55 of its tools are mapped to file operations in
   `references/workbench-file-protocol.md`.
-- **The Codex-managed deep-scan worker pool.** Upstream spawns real `codex` CLI
-  subprocesses (`resolveCodexPath() → CODEX_CLI_PATH || "codex"`). `mode-deep-scan.md`
-  keeps the doctrine — independent rounds, saturation via `stopAfterNoNew`, the
-  discovery→tail boundary, "recurrence is search evidence, not reportability proof" —
-  and runs the rounds with `Agent` subagents instead.
+- **The Codex-managed deep-scan coordinator.** Upstream spawns real `codex` CLI
+  subprocesses under a reserved worker permission profile. `mode-deep-scan.md`
+  keeps the doctrine — independent complete rounds, saturation via
+  `stopAfterNoNew`, the reduction boundary, "recurrence is search evidence, not
+  reportability proof" — and runs the rounds with `Agent` subagents instead.
+- **The Codex desktop references** (`desktop-scan.md`,
+  `desktop-config-preflight.md`) and the hosted TAC access advisory. Desktop-app
+  and hosted-connector only; neither gates a scan upstream either.
 - **The Codex desktop setup UI, goals, handoff/claim, and remediation-request
   flows.** No equivalent exists. Coverage objectives are stated in the first visible
   update; `<scan_dir>` is the durable state.
@@ -190,6 +198,19 @@ applied, in case you extend it:
    `codex-security.findings`, `codex-security-snapshot/v1:…`, `codexSecurity/v1`,
    and the `source_type: codex_security_finding` enum, because the validators match
    on them.
+
+## Upstream 0.1.24 architecture change
+
+Upstream replaced the four-phase repository scan with one self-contained audit:
+an independent baseline auditor plus focused investigators, whose results the
+parent reconciles and validates once (`core-scan.md`). Deep scan now runs
+*complete* scans repeatedly rather than repeating discovery only. The four phase
+skills survive for the diff scan, which still ranks changed files, records
+candidates, and keeps per-candidate ledgers.
+
+That is why a repository scan in this port no longer writes `rank_input.jsonl`,
+`work_ledger.jsonl`, or `candidate_ledger.jsonl`. Those files are diff-scan
+artifacts now.
 
 ## Verified working
 

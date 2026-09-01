@@ -9,7 +9,7 @@ and re-run the verification below.
 Renames the five SARIF branding sites in `scripts/finalize_scan_contract.py` so
 generated SARIF is attributed to this port rather than to Codex Security. These
 values are cosmetic: nothing in the codebase reads them back, and neither
-`validate_scan_contract.py` nor `validate_report_format.py` checks them.
+`validate_scan_contract.py` nor the report projection checks them.
 
 | SARIF field | Upstream | Here |
 |---|---|---|

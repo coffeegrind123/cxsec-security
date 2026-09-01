@@ -4,6 +4,12 @@ Run the read-only preflight helper before substantive scan work. It evaluates th
 routed capability profile from `$CXSEC_HOME/preflight/capability-profiles.toml`
 and prints one JSON result.
 
+**Only modes 1 and 2 run it.** A deep scan (mode 3) has no parent capability
+requirements: do not load this file, run the helper, request remediation, or
+publish preflight checks for it. It validates its own ownership, target, scope,
+and read-only sandbox instead, and manages its rounds independently of any parent
+worker allowance.
+
 Resolve `<python_command>` to the configured Python interpreter (`$PYTHON` when
 one is provided), otherwise `python` on Windows and `python3` on Unix-like hosts.
 
@@ -14,19 +20,20 @@ by itself. Declare the capabilities honestly. This is the verified working form:
 
 ```bash
 python3 $CXSEC_HOME/scripts/config_preflight.py \
-  --profile <security_scan|security_diff_scan|deep_security_scan> \
+  --profile <security_scan|security_diff_scan> \
   --cwd <scan-working-directory> \
   --runtime-check delegation_available=<true|false> \
-  --runtime-check goal_tools_available=false \
   --multi-agent-runtime-owner native \
   --multi-agent-runtime-version v2 \
   --multi-agent-session-cap <observed concurrent subagent capacity> \
-  --multi-agent-runtime-provenance tool-surface \
-  --effective-config features.goals=true
+  --multi-agent-runtime-provenance tool-surface
 ```
 
-You may also route by skill name with `--skill <security-scan|security-diff-scan|deep-security-scan>`
-instead of `--profile`.
+The `security_diff_scan` profile additionally takes
+`--runtime-check goal_tools_available=<true|false>` and
+`--effective-config features.goals=true`; the `security_scan` profile neither
+inspects nor requires goal tools. You may also route by skill name with
+`--skill <security-scan|security-diff-scan>` instead of `--profile`.
 
 Determine the runtime-check values from the actual tool surface:
 
@@ -34,9 +41,10 @@ Determine the runtime-check values from the actual tool surface:
   Delegation tools may be deferred rather than present in the initial tool list;
   search the deferred tool surface before passing `false`. Pass `false` only after
   discovery fails to expose a usable delegation tool.
-- **`goal_tools_available`** — `false`. There are no goal tools here. This
-  legitimately fails, but its severity is `suggest` in every profile, so it does
-  not block. State the coverage objective in your first visible update instead.
+- **`goal_tools_available`** — `false`, and only for `security_diff_scan`. There
+  are no goal tools here. This legitimately fails, but its severity is `suggest`,
+  so it does not block. State the coverage objective in your first visible update
+  instead.
 - **`--multi-agent-session-cap`** — the observed number of subagents you can
   actually run concurrently, including the root. Profiles that evaluate worker
   capacity subtract the root thread. Do not inflate this; a slot count is the
@@ -47,10 +55,6 @@ the explicitly invoked scan authorizes it. If delegation is unavailable, pass
 `delegation_available=false`, continue on the parent-only fallback, and do not
 describe configured slots as running workers or claim reduced coverage that did
 not happen.
-
-If a profile checks skill dependencies, repeat `--available-plugin-skill <name>`
-for the reference files present in this skill (for example `security-scan`). Use
-what is actually available, not what exists on disk elsewhere.
 
 Save the result to `<scan_dir>/preflight.json`.
 
@@ -84,9 +88,12 @@ Requirement severities:
 Top-level `status` values:
 
 - `ready` — continue, explaining any material warn or suggest limitation
-- `incomplete` — a capability the profile needs is `unknown`. Establish it from
-  the tool surface and rerun with an explicit `--runtime-check`. Never treat
-  `incomplete` or an unknown value as evidence that a capability is available.
+- `incomplete` — a **blocking** capability the profile needs is `unknown`.
+  Establish it from the tool surface and rerun with an explicit `--runtime-check`.
+  Never treat `incomplete` or an unknown value as evidence that a capability is
+  available. An unknown `warn` or `suggest` capability does not block a `ready`
+  scan: continue on the documented degraded path without claiming that capability
+  is available.
 - `blocked` — handle remediation below
 - `error` — report the exact blocker and retry the documented recovery when
   possible
@@ -136,6 +143,14 @@ and exit code, overall status, unmet or unknown capabilities, the reported
 conflicting setting. This keeps preflight inspection out of the primary scan
 context.
 
-Deep scan's repeated discovery rounds do not require a particular parent
-delegation runtime, ownership, capacity, or depth beyond what the
-`deep_security_scan` profile checks.
+## Not ported
+
+Upstream 0.1.24 adds two preflight companions that do not apply here:
+`desktop-config-preflight.md`, which is Codex-desktop-app setup, and a TAC
+status advisory served by a hosted Codex connector app. Neither has an equivalent
+in this port, and neither gates a scan upstream either.
+
+Upstream also runs its deep-scan rounds as MCP-owned SDK sessions under a
+reserved worker permission profile. Here the rounds are `Agent` subagents, so
+there is no permission profile to check — the read-only discipline in
+`hard-rules.md` is what holds.

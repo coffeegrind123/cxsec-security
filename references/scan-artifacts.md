@@ -11,6 +11,7 @@ Use these shared path conventions for security scan workflows unless the user ex
 - `security_scans_dir=<system_temp_dir>/codex-security-scans/<repo_name>`
 - `scan_id=<commit>_<scan timestamp>`
 - `scan_dir=<security_scans_dir>/<scan_id>`
+- `target_paths_file=<explicitly enumerated scoped-path file>` when the user supplies one. Treat it as read-only scope input: pass it directly to `make-repo-scope-input --scopes-file` and `bind-repo-scopes --scopes-file` before finalization, and do not print, evaluate, modify, or treat its contents as shell syntax.
 - `artifacts_dir=<scan_dir>/artifacts`
 - `context_dir=<artifacts_dir>/01_context`
 - `discovery_dir=<artifacts_dir>/02_discovery`
@@ -18,9 +19,9 @@ Use these shared path conventions for security scan workflows unless the user ex
 - `reconciliation_dir=<artifacts_dir>/04_reconciliation`
 - `findings_dir=<artifacts_dir>/05_findings`
 
-The MCP app resolves the platform temporary directory automatically. For a manual workflow, use the active process temporary directory (for example, `%TEMP%` on Windows or `$TMPDIR` when configured on Unix-like hosts) instead of hardcoding `/tmp`.
+The plugin resolves the platform temporary directory automatically. For a manual workflow, use the active process temporary directory (for example, `%TEMP%` on Windows or `$TMPDIR` when configured on Unix-like hosts) instead of hardcoding `/tmp`.
 
-Resolve `<python_command>` to the configured Python interpreter (`$PYTHON` when one is provided), otherwise use `python` on Windows and `python3` on Unix-like hosts.
+Resolve `<python_command>` to the configured Python interpreter (`"$PYTHON"` when one is provided), otherwise use `python3`.
 
 ## Threat Model (Phase 1) Paths
 
@@ -37,26 +38,24 @@ End each repository-scoped threat model with these two lines:
 
 ## Finding Discovery (Phase 2) Paths
 
-### Standard And Deep Repository Or Scoped-Path Scans
+### Deep Rounds And Compact Diff Discovery
 
-- Prepare the deterministic worklist with `generate_rank_input.py` (`make-repo-rank-input` then `copy-deep-review-input`); read repository-relative source paths from `<discovery_dir>/deep_review_input.jsonl`.
-- Write raw candidates to `<discovery_dir>/raw_candidates.jsonl` and normalize them once into `<discovery_dir>/candidates.jsonl` with `normalize_candidates.py`; read the normalized set from that file.
-  - The writer validates candidates against the assigned review items, merges rows with the same CWE ids, locations, and optional instance, preserves their text, and assigns deterministic `candidate_id` values. This is the sole durable candidate set for a Standard scan, an independent Deep discovery worker, or a canonical semantically merged Deep result.
+A repository scan writes its findings and coverage straight into the unsealed canonical files. A deep scan runs complete repository-scan rounds; each round checkpoints as it works and returns its final validated findings, coverage, threat model, and optional scope as `result.json`. Pending candidates retain their original evidence in `coverage.deferred`. A checkpoint alone is never an accepted complete round result. The coordinator semantically reduces the completed round results and writes the parent scan's unsealed `scan-manifest.json`, `findings.json`, and `coverage.json`; it does not rerun validation or attack-path phases or author a second draft. Diff scans retain the compact artifacts described below.
+
+- A diff scan writes raw candidates to `<discovery_dir>/raw_candidates.jsonl` and normalizes them once into `<discovery_dir>/candidates.jsonl` with `normalize_candidates.py`; read the normalized set from that file.
+  - Normalization validates candidates against assigned source paths, merges rows with the same CWE ids, locations, and optional instance, preserves their text, and assigns deterministic `candidate_id` values.
   - After normalization, compact validation adds exactly one `validation` object to every row with `disposition` (`reportable`, `suppressed`, `not_applicable`, or `deferred`), `method`, `confidence` (`high`, `medium`, or `low`), `confidence_rationale`, concise `rubric` and `evidence`, `counterevidence_or_proof_gap`, `remaining_uncertainty`, and optional `artifact_paths`. Add `source`, `control`, `sink`, or `preconditions` only when they clarify or differ from the discovery fields.
   - Compact attack-path analysis adds exactly one `attack_path` object to each validation row marked `reportable` or `deferred`, with `decision` (`reportable`, `ignore`, or `deferred`), `dataflow`, `reachability`, `counterevidence`, `impact` and `likelihood` (`high`, `medium`, `low`, `ignore`, or `unknown`), `severity` (`critical`, `high`, `medium`, `low`, `ignore`, or `unknown`), `severity_rationale`, `change_conditions`, and `proof_gap` when deferred. A `reportable` decision requires severity `critical`, `high`, `medium`, or `low`; `ignore` requires severity `ignore`; `deferred` uses a provisional reportable severity or `unknown`.
   - Append all validations and all eligible attack-path decisions as receipts in `<findings_dir>/<candidate_id>/candidate_ledger.jsonl`. Preserve every discovery field and the candidate order from `candidates.jsonl`.
 - Optional compact validation evidence: `<discovery_dir>/validation_artifacts/<candidate_id>/`
   - Create this directory only for actual PoCs, crafted inputs, or logs and reference those paths from the row's `validation` object. Do not create placeholder per-candidate directories or narrative reports.
 
-The legacy ranking, raw/deduped candidate, per-finding receipt, and phase-report paths below are for diff or resumed legacy workflows. Compact Standard and Deep scans use the same enriched ledger instead.
+The worklist, per-finding receipt, and phase-report paths below apply to diff workflows. Repository and deep scans assemble validated findings directly, without persisted candidate ledgers or per-finding receipts.
 
-### Coverage Planning
+### Diff Discovery And Coverage
 
 - Advisory seed research: `<context_dir>/seed_research.md`
-- Scoped ranking input: `<discovery_dir>/rank_input.jsonl` if applicable
-- Scoped ranking shards: `<discovery_dir>/rank_shards/rank-shard-NNNN.input.jsonl` and matching worker-local `.output.jsonl` files if ranking applies
-- Scoped ranking worker assignments: `<discovery_dir>/rank_worker_assignments.json` if ranking applies
-- Scoped ranking output: `<discovery_dir>/rank_output.jsonl` if applicable
+- Changed source input: `<discovery_dir>/rank_input.jsonl`
 - Scoped deep-review input: `<discovery_dir>/deep_review_input.jsonl` if applicable
 - Finding discovery report: `<discovery_dir>/finding_discovery_report.md`
 
@@ -67,9 +66,10 @@ The legacy ranking, raw/deduped candidate, per-finding receipt, and phase-report
 
 ### Candidate Reconciliation
 
-- Candidate findings directory: `<findings_dir>/`
-- Per-finding directory: `<findings_dir>/<candidate_id>/`
-- Per-finding candidate ledger: `<findings_dir>/<candidate_id>/candidate_ledger.jsonl`
+- Compact Diff candidate ledger: `<discovery_dir>/candidate_ledger.jsonl`
+- Standalone or legacy Diff candidate findings directory: `<findings_dir>/`
+- Standalone or legacy Diff per-finding directory: `<findings_dir>/<candidate_id>/`
+- Standalone or legacy Diff per-finding candidate ledger: `<findings_dir>/<candidate_id>/candidate_ledger.jsonl`
 - Scoped dedupe report: `<reconciliation_dir>/dedupe_report.md` if applicable
 - Scoped deduped candidates: `<reconciliation_dir>/deduped_candidates.jsonl` if applicable
 
@@ -81,7 +81,7 @@ The legacy ranking, raw/deduped candidate, per-finding receipt, and phase-report
 
 ## Validation (Phase 3) Paths
 
-Compact Standard and Deep scans use the nested `validation` record and optional compact evidence path above. Other workflows use these paths:
+Repository scans and deep-scan rounds include validation directly in their final finding semantics. Diff scans record validation as a `validation` receipt per candidate and may use the optional compact evidence path above. Standalone diff workflows may also use these paths:
 
 - Scan-level validation summary: `<findings_dir>/validation_summary.md` if applicable
 - Per-finding validation report: `<findings_dir>/<candidate_id>/validation_report.md`
@@ -89,7 +89,7 @@ Compact Standard and Deep scans use the nested `validation` record and optional 
 
 ## Attack-Path Analysis (Phase 4) Paths
 
-Compact Standard and Deep scans use the nested `attack_path` record above. Other workflows use these paths:
+Repository scans and deep-scan rounds include attack-path analysis directly in their final finding semantics. Diff scans record attack-path decisions as an `attack_path` receipt per eligible candidate. Standalone diff workflows may also use these paths:
 
 - Scan-level attack-path analysis report: `<findings_dir>/attack_path_analysis_report.md` if applicable
 - Per-finding attack-path analysis report: `<findings_dir>/<candidate_id>/attack_path_analysis_report.md`
@@ -97,6 +97,8 @@ Compact Standard and Deep scans use the nested `attack_path` record above. Other
 ## Final Report Paths
 
 - Unsealed canonical draft: `<scan_dir>/scan-manifest.json`, `<scan_dir>/findings.json`, `<scan_dir>/coverage.json`
+- Deep round result: `<discovery_dir>/rounds/round-<k>/result.json`; the coordinator writes the aggregated parent draft
+- In-flight checkpoint: `<scan_dir>/checkpoint-findings.json` and `<discovery_dir>/worker-<label>.json`
 - Completed results: the sealed `<scan_dir>/scan-manifest.json` plus the generated `<scan_dir>/report.md`
 - Final scan report: `<scan_dir>/report.md`
 - Detailed vulnerability write-up: `<scan_dir>/findings/<slug>/<slug>.md`

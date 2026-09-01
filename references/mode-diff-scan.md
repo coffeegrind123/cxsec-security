@@ -4,6 +4,10 @@
 
 Used when a user wants to review a Git-backed change set for security regressions. Keep the scan phases separate and produce the final markdown report.
 
+**This is the only mode that runs the four-phase pipeline.** Repository and deep
+scans use the single self-contained audit in `core-scan.md`; `phase-2-discovery.md`,
+`phase-3-validation.md`, and `phase-4-attack-path.md` exist for this mode.
+
 ## Setup
 
 All scan state is file-based. Read `workbench-file-protocol.md` first; it defines
@@ -81,12 +85,12 @@ Use the shared scan artifact path conventions in `scan-artifacts.md`.
 
 ## Execution Plan
 
-Start this plan only after `Setup Workspace Routing` has loaded an app-generated or desktop prompt-only scan context with a `scanId`, or determined that the host is using the non-app terminal/chat workflow, and the `security_diff_scan` capability preflight has returned `ready`.
+Start this plan only after `Setup` has written `<scan_dir>/scan-context.json` and the `security_diff_scan` capability preflight has returned `ready`.
 
 Follow this plan in order. Do not skip ahead to a later phase until the current phase has produced its intended output.
 
 1. Resolve the Git-backed scan target, `repo_name`, `security_scans_dir`, `scan_id`, `scan_dir`, and `artifacts_dir` using `scan-artifacts.md`.
-2. Create or adopt the scan goal described in `Goal Setup` for that active scan context.
+2. State the coverage objective from `Coverage Objective` in your first visible update.
 3. Read `security-guidance.md`, compile the repository's policy to `<context_dir>/security_guidance.md`, and read it before threat modeling or inspecting source code.
 4. Run ``phase-1-threat-model.md`` first.
   - Copy the repository-scoped threat model to the per-scan threat model path without alteration for auditability.
@@ -162,5 +166,6 @@ Populate all final report semantics in the canonical manifest, findings, and cov
 
 Read `hard-rules.md` before applying scan-mode-specific hard rules.
 
-- After any app setup handoff or desktop prompt-only start has provided a `scanId`, or in the non-app terminal/chat workflow, create or adopt the scan goal only after the capability preflight has returned `ready`, and before substantive scan work. Do not complete it until the resolved diff-scoped files/worklist rows, candidate ledgers, and final report meet the `Goal Setup` closure criteria.
+- State the coverage objective only after the capability preflight has returned `ready`, and before substantive scan work. Do not treat it as met until the resolved diff-scoped worklist rows, candidate ledgers, and final report meet the closure criteria above.
 - Do not claim diff coverage until every `deep_review_input.jsonl` row has a completion receipt in `work_ledger.jsonl`.
+- Do not broaden a diff scan into a repository audit. If the user wants one, that is mode 1.

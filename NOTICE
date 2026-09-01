@@ -5,16 +5,16 @@ This product includes software and documentation derived from
 codex-security (https://github.com/openai/codex-security),
 Copyright OpenAI, licensed under the Apache License, Version 2.0.
 
-Derived from upstream plugin version 0.1.15, commit
-0facad0b2bda57d845ae22f8b87584ddd716ffba, source path
-sdk/typescript/_bundled_plugin.
+Derived from upstream plugin version 0.1.24, commit
+d4b7d29a87cb86c9072f7905ba867d02385d8fd3, source path plugins/codex-security.
+(Upstream relocated the plugin from sdk/typescript/_bundled_plugin at 0.1.16+.)
 
 Modifications made to the upstream work
 ---------------------------------------
 
 Documentation and skill definitions (SKILL.md, references/):
 
-  * The 13 upstream skills were consolidated into one router skill. Top-level
+  * The 14 upstream skills were consolidated into one router skill. Top-level
     skills became references/mode-*.md; the four phase skills became
     references/phase-*.md. Their frontmatter was converted to HTML comments.
   * All reference paths were flattened into a single references/ namespace.
@@ -27,8 +27,27 @@ Documentation and skill definitions (SKILL.md, references/):
     MCP server exposes the required tools.
   * Product branding was removed from prose so mode selection does not depend on
     an absent product.
-  * references/hard-rules.md is upstream references/shared-hard-rules.md, renamed
-    and edited to cover repository scans alongside diff, deep and resumed scans.
+  * references/hard-rules.md corresponds to upstream references/scan-prologue.md
+    (previously references/shared-hard-rules.md), edited to cover repository scans
+    alongside diff and deep scans and to replace upstream's desktop-app,
+    handoff-token and MCP-ownership machinery with the file protocol.
+  * references/core-scan.md is upstream references/core-scan.md, the audit engine
+    that replaced the four-phase pipeline for repository scans in 0.1.16+. Its
+    checkpointing, which upstream performs through record_codex_security_scan_draft,
+    is mapped to checkpoint files under <scan_dir>.
+  * references/mode-deep-scan.md replaces upstream's MCP deep-scan coordinator
+    with locally run Agent rounds, each performing the complete core-scan audit,
+    followed by the same semantic reduction upstream's coordinator performs.
+  * references/threat-model.md is upstream references/threat-model.md, which
+    replaced skills/threat-model/references/threat-model-guidance.md.
+  * references/mode-patch-risk.md and references/risk-rubric.md are upstream
+    skills/assess-patch-risk, added in 0.1.16+.
+
+Runtime layout (runtime/):
+
+  * skills/assess-patch-risk/scripts/validate_patch_risk_assessment.py is
+    vendored at its upstream depth rather than flattened into scripts/, because
+    it resolves the plugin root as parents[3].
 
 Runtime code (runtime/):
 
@@ -44,9 +63,12 @@ Runtime code (runtime/):
 Not included from upstream
 --------------------------
 
-  * mcp/server.mjs (the MCP server)
-  * the Codex-CLI-driven deep-security-scan worker fan-out
+  * mcp-app/ (the MCP server and its TypeScript sources and tests)
+  * the Codex-CLI-driven deep-security-scan coordinator
   * agents/openai.yaml
+  * references/desktop-scan.md, references/desktop-config-preflight.md, and the
+    hosted TAC access advisory (Codex desktop app and hosted connector only)
+  * tests/, skills/triage-finding/evals/, plugin-files.json, pyproject.toml
 
 Additions original to this work
 -------------------------------

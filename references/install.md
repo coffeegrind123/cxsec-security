@@ -27,35 +27,42 @@ once a new install verifies.
 ## What lands where
 
 Into `$CXSEC_HOME` (default `~/.claude/codex-security`), from
-`openai/codex-security` at the pinned commit, path
-`sdk/typescript/_bundled_plugin`:
+`openai/codex-security` at the pinned commit, path `plugins/codex-security`
+(upstream moved it there from `sdk/typescript/_bundled_plugin` in 0.1.16+):
 
 | Directory | Contents |
 |---|---|
-| `scripts/` | 34 stdlib-only Python helpers. No pip install, no network calls. |
-| `schemas/` | 12 JSON Schemas for the scan contract. |
+| `scripts/` | 39 stdlib-only Python helpers, including the `workbench/` subpackage. No pip install, no network calls. |
+| `schemas/` | 13 JSON Schemas for the scan contract and patch-risk assessment. |
 | `references/` | Upstream shared reference set. |
 | `preflight/` | `capability-profiles.toml` — capability gate definitions. |
 | `examples/` | `completed-scan/` — the fixture the smoke test finalizes. |
+| `skills/assess-patch-risk/scripts/` | Mode 10's assessment validator, kept at its upstream depth. |
 
 Plus `LICENSE` (Apache-2.0), a generated `PROVENANCE.md`, and `patches/` holding
 the applied patch.
 
-**`scripts/` and `schemas/` must stay siblings.** `finalize_scan_contract.py`
-resolves schemas as `<script_parent>/../schemas`; moving either one breaks report
-generation with a schema-resolution error, not an obvious layout error.
+**Two paths are load-bearing.** `finalize_scan_contract.py` resolves schemas as
+`<script_parent>/../schemas`, so `scripts/` and `schemas/` must stay siblings;
+moving either one breaks report generation with a schema-resolution error, not an
+obvious layout error. `validate_patch_risk_assessment.py` resolves the plugin root
+as `parents[3]`, so it must stay at
+`$CXSEC_HOME/skills/assess-patch-risk/scripts/` — flattening it into `scripts/`
+breaks its schema lookup.
 
 ## What the checks mean
 
 | Check | Proves |
 |---|---|
-| `python 3.x` | An interpreter 3.9+ exists. The runtime is stdlib-only, but it still needs one. |
+| `python 3.x` | An interpreter 3.11+ exists. The runtime is stdlib-only, but `config_preflight.py` and `deep_scan_config.py` import `tomllib`, which is stdlib only from 3.11; 3.9/3.10 work only with `tomli` installed. |
 | `scripts/ and schemas/ are siblings` | The load-bearing layout constraint holds. |
 | `<script>.py runs` | Each load-bearing helper parses and starts under this interpreter. |
 | `SARIF rebrand patch applied` | 0 upstream branding sites, 5 `cxsec` sites in the finalizer. |
+| `patch-risk validator present at its load-bearing depth` | Mode 10 can find its schema. |
 | `capability preflight emits parseable JSON` | `config_preflight.py` can read its profile registry. |
 | `end-to-end` | The bundled example scan, stripped back to an unsealed draft, finalizes into a sealed manifest, `report.md`, and SARIF 2.1.0 attributed to `cxsec-security`. |
-| `report.md passes validate_report_format.py` | The generated report satisfies the format validator. |
+| `sealed bundle re-validates` | `validate_scan_contract.py` re-reads the whole sealed bundle — manifest, findings, coverage and the generated report — and reports `status: valid`. |
+| `patch-risk validator resolves its schema and rejects an invalid assessment` | Mode 10's validator loads the finalizer by path and its schema by depth, and actually enforces the contract. |
 
 The end-to-end check is the one that matters: it exercises schema resolution,
 identity derivation, sealing, report generation, and SARIF export in one pass.
@@ -77,6 +84,11 @@ identity derivation, sealing, report generation, and SARIF export in one pass.
   against the new source and re-run. Do not skip it silently.
 - **`examples/completed-scan absent`** — an install predating the fixture. The
   end-to-end check is skipped, not failed; `--force` vendors it.
+- **`skills/assess-patch-risk/scripts/ absent`** — an install predating mode 10.
+  Warned, not failed; `--force` vendors it.
+- **`<SRC_SUBDIR> not present at this ref`** — upstream moved the plugin again.
+  The installer searches the tarball for `scripts/finalize_scan_contract.py` and
+  reports the path it found; update `SRC_SUBDIR` in `install.sh` to match.
 
 ## No network
 
@@ -97,8 +109,8 @@ path never touches the network.
 
 ## Transports the installer cannot provide
 
-Modes 1–3, 5–7 and 9 need nothing beyond the runtime. Modes 4 and 8 additionally
-need a transport:
+Modes 1–3, 5–7, 9 and 10 need nothing beyond the runtime. Modes 4 and 8
+additionally need a transport:
 
 - **GitHub** — `gh` authenticated (`gh auth login`), or a connected MCP server
   exposing GitHub tools.
@@ -110,6 +122,7 @@ configure them in your MCP settings and re-check tool presence in-session.
 
 ## Deliberately not vendored
 
-The upstream MCP server (`mcp/server.mjs`) and the Codex-CLI-driven
-`deep-security-scan` worker fan-out. `workbench-file-protocol.md` is the
-file-based replacement for every upstream MCP tool.
+The upstream MCP server (`mcp-app/`), the Codex-CLI-driven `deep-security-scan`
+coordinator, the upstream test suite, and `plugin-files.json`.
+`workbench-file-protocol.md` is the file-based replacement for every upstream MCP
+tool.

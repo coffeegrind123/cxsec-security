@@ -1,6 +1,6 @@
 --- a/scripts/finalize_scan_contract.py
 +++ b/scripts/finalize_scan_contract.py
-@@ -1903,7 +1903,7 @@
+@@ -2234,7 +2234,7 @@
      if isinstance(candidate_id, str) and candidate_id:
          properties["candidateId"] = candidate_id
      partial_fingerprints = {
@@ -9,16 +9,16 @@
      }
      line_hash = _github_primary_location_line_hash(finding, source_root, line_hash_cache)
      if line_hash is not None:
-@@ -1935,7 +1935,7 @@
+@@ -2266,7 +2266,7 @@
      run: dict[str, Any] = {
          "tool": {
              "driver": {
 -                "name": "Codex Security",
 +                "name": "cxsec-security",
                  "version": scan["producer"]["version"],
-                 "rules": [_sarif_rule(rule_id) for rule_id in ordered_rule_ids],
-             }
-@@ -1946,8 +1946,8 @@
+                 "rules": [
+                     _sarif_rule(rule_id, findings_by_rule[rule_id]) for rule_id in ordered_rule_ids
+@@ -2279,8 +2279,8 @@
              for finding in ordered_findings
          ],
          "properties": {
@@ -29,12 +29,12 @@
          },
      }
      if target["kind"] == "git_revision" and target.get("remote") and target.get("revision"):
-@@ -2099,7 +2099,7 @@
-     sarif = build_sarif(manifest, findings, source_root)
-     if coverage["completeness"] != "complete":
+@@ -2437,7 +2437,7 @@
+     execution_successful = manifest["scan"]["status"] == "completed"
+     if not execution_successful or coverage["completeness"] != "complete":
          run = sarif["runs"][0]
 -        run["properties"]["codexSecurityCoverageCompleteness"] = coverage["completeness"]
 +        run["properties"]["cxsecCoverageCompleteness"] = coverage["completeness"]
-         if coverage["deferred"]:
-             run["invocations"] = [
-                 {
+         run["invocations"] = [
+             {
+                 "executionSuccessful": execution_successful,

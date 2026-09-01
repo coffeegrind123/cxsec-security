@@ -6,6 +6,8 @@
 
 Investigate the proposed code or code changes for technically plausible security vulnerabilities using the threat model as context.
 
+**Repository scans (mode 1) and deep-scan rounds (mode 3) discover inside their own `core-scan.md` audit; neither invokes this phase.** For an explicit standalone repository-discovery request, apply the checklist below directly to the authorized current source without running the diff-only workflow or starting another scan.
+
 ## Artifact Resolution
 
 The path references in this skill are the default locations for this phase.
@@ -18,7 +20,8 @@ Use the shared scan artifact path conventions in `scan-artifacts.md`.
 Read `security-guidance.md` and resolve the applicable policy before inspecting each source file. A delegated file-review worker must do the same before reading its assigned source.
 
 ### Code Diff Workflow
-If the scan target is for a targeted code-diff:
+
+For a targeted code diff:
 
 - Read `scan-artifacts-and-ledger.md`.
 - Generate `rank_input.jsonl` deterministically from changed source-like files with `<python_command> $CXSEC_HOME/scripts/generate_rank_input.py make-diff-rank-input --repo <repo_root> --base <base> --mode revisions --head <head> --out <discovery_dir>/rank_input.jsonl` for PR, commit, and branch diffs, or `<python_command> $CXSEC_HOME/scripts/generate_rank_input.py make-diff-rank-input --repo <repo_root> --base <base> --mode local-patch --out <discovery_dir>/rank_input.jsonl` for a local patch.
@@ -27,10 +30,6 @@ If the scan target is for a targeted code-diff:
 - Deep-review every file in `deep_review_input.jsonl` using the shared scoped file-review rules.
 - Stay anchored to the changed code and directly supporting files. Unchanged siblings are context or negative controls unless the diff newly reaches them, weakens their shared control, or changes a shared sink/helper they depend on.
 - When the diff is too large to review credibly as one parent-agent pass, use file-review subagents when they are available under the resolved scan authorization and follow the shared scoped deep-review rules in `scan-artifacts-and-ledger.md#scoped-deep-review`.
-
-### Exhaustive Repository Or Scoped-Path Workflow
-
-If the scan target is repository-wide or a scoped path, use only the concise detection-first procedure in `repository-wide-scan.md`. Read the assigned repository source paths from `<discovery_dir>/deep_review_input.jsonl` (or the partition your parent assigned you), and write all discovered candidates once to `<discovery_dir>/raw_candidates.jsonl` for normalization. A Standard parent includes `scanId`; an independent Deep discovery worker uses its bound worker context. This replaces the checklist, phase-specific output, and receipt requirements below for Standard scans and independent Deep discovery workers; do not load additional repository-wide ranking, ledger, validation, or attack-path references. The remaining guidance in this skill continues to apply to diff-scoped discovery.
 
 ## Discovery Checklist
 
@@ -136,7 +135,7 @@ Otherwise, for each candidate include:
 - taxonomy with CWE IDs when known
 - enough evidence that a later reviewer can understand why the candidate is technically plausible before validation
 
-For diff-scoped discovery, when candidates are emitted, create the per-finding directory from `scan-artifacts.md` and append one discovery receipt to that finding's candidate ledger. The ledger row should identify the candidate, scan scope, discovery status, affected locations, and the discovery artifact or evidence that produced it.
+When candidates are emitted, create the per-finding directory from `scan-artifacts.md` and append one discovery receipt to that finding's candidate ledger. The ledger row should identify the candidate, scan scope, discovery status, affected locations, and the discovery artifact or evidence that produced it.
 
 
 ## Hard Rules
@@ -145,8 +144,8 @@ For diff-scoped discovery, when candidates are emitted, create the per-finding d
 - Focus on the actual changes, not the commit message.
 - Stay anchored to the diff and the files it relies on for diff-scoped scans.
 - Candidate discovery is about plausibility, not final severity.
-- For diff-scoped discovery, do not emit an untracked candidate. Every candidate finding needs a stable candidate id and a discovery receipt in its candidate-ledger path from `scan-artifacts.md` so later validation and attack-path analysis can prove coverage for that exact finding.
+- Do not emit an untracked candidate. Every candidate finding needs a stable candidate id and a discovery receipt in its candidate-ledger path from `scan-artifacts.md` so later validation and attack-path analysis can prove coverage for that exact finding.
 - Do not add `relevant_lines` when no bug exists. For diff-scoped scans, add `relevant_lines` only when the bug overlaps the diff and those lines are relevant to the bug.
 - Do not turn discovery into full validation or full severity calibration.
 - Continue reviewing until no additional distinct plausible candidates remain.
-- For diff-scoped discovery, save a final visible report using the finding discovery report path from `scan-artifacts.md`.
+- Save a final visible report using the finding discovery report path from `scan-artifacts.md`.

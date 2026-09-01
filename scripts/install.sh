@@ -11,10 +11,13 @@
 set -euo pipefail
 
 UPSTREAM_REPO="openai/codex-security"
-PINNED_VERSION="0.1.15"
-PINNED_SHA="0facad0b2bda57d845ae22f8b87584ddd716ffba"
-SRC_SUBDIR="sdk/typescript/_bundled_plugin"
+PINNED_VERSION="0.1.24"
+PINNED_SHA="d4b7d29a87cb86c9072f7905ba867d02385d8fd3"
+SRC_SUBDIR="plugins/codex-security"
 VENDOR_DIRS=(scripts schemas references preflight examples)
+# Vendored with their upstream path intact: validate_patch_risk_assessment.py resolves
+# the plugin root as parents[3], so flattening it into scripts/ breaks its schema lookup.
+VENDOR_SKILL_DIRS=(skills/assess-patch-risk/scripts)
 PATCH_NAME="0001-rebrand-sarif-output.patch"
 
 SKILL_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -55,7 +58,7 @@ Usage: install.sh [options]
   -h, --help          This text.
 
 Installs $UPSTREAM_REPO@${PINNED_VERSION} ($SRC_SUBDIR) into \$CXSEC_HOME:
-${VENDOR_DIRS[*]} plus LICENSE, then applies $PATCH_NAME.
+${VENDOR_DIRS[*]} ${VENDOR_SKILL_DIRS[*]} plus LICENSE, then applies $PATCH_NAME.
 
 Source: upstream by default, falling back to the bundled runtime/ tree when the
 download fails. --local skips the network entirely. The runtime itself never makes
@@ -108,10 +111,16 @@ check_python() {
   have "$PY" || { bad "no $PY on PATH — the runtime is stdlib Python, but it needs an interpreter"; return; }
   local v
   v="$("$PY" -c 'import sys;print("%d.%d"%sys.version_info[:2])' 2>/dev/null || echo "?")"
-  if "$PY" -c 'import sys;raise SystemExit(0 if sys.version_info>=(3,9) else 1)' 2>/dev/null; then
+  if "$PY" -c 'import sys;raise SystemExit(0 if sys.version_info>=(3,11) else 1)' 2>/dev/null; then
     ok "python $v"
+  elif "$PY" -c 'import sys;raise SystemExit(0 if sys.version_info>=(3,9) else 1)' 2>/dev/null; then
+    if "$PY" -c 'import tomli' 2>/dev/null; then
+      warn "python $v — below the 3.11 floor, but tomli is installed so the preflight can still read TOML"
+    else
+      bad "python $v is too old — need 3.11+ for stdlib tomllib, or 3.9+ with tomli installed"
+    fi
   else
-    bad "python $v is too old — need 3.9+"
+    bad "python $v is too old — need 3.11+ (3.9+ only with tomli installed)"
   fi
 }
 
@@ -133,13 +142,21 @@ check_layout() {
   for d in preflight references; do
     [ -d "$CXSEC_HOME/$d" ] && ok "$d/ present" || warn "$d/ absent (re-run with --force to vendor it)"
   done
+  # Mode 10's validator resolves the plugin root as parents[3], so this exact depth is
+  # load-bearing: skills/assess-patch-risk/scripts/ must sit directly under $CXSEC_HOME.
+  if [ -f "$CXSEC_HOME/skills/assess-patch-risk/scripts/validate_patch_risk_assessment.py" ]; then
+    ok "patch-risk validator present at its load-bearing depth"
+  else
+    warn "skills/assess-patch-risk/scripts/ absent — mode 10 cannot validate an assessment (--force vendors it)"
+  fi
   [ -f "$CXSEC_HOME/LICENSE" ] && ok "LICENSE present" || warn "LICENSE absent — this runtime is Apache-2.0, ship the license"
 }
 
 check_scripts() {
   local s
   for s in finalize_scan_contract.py config_preflight.py validate_scan_contract.py \
-           validate_report_format.py validate_tracking_source.py normalize_candidates.py; do
+           report_projection.py validate_tracking_source.py normalize_candidates.py \
+           generate_in_scope_files.py generate_rank_input.py resolve_security_md.py; do
     if [ -f "$CXSEC_HOME/scripts/$s" ]; then
       if "$PY" "$CXSEC_HOME/scripts/$s" --help >/dev/null 2>&1; then
         ok "$s runs"
@@ -227,10 +244,35 @@ PY
     return
   fi
 
-  if "$PY" "$CXSEC_HOME/scripts/validate_report_format.py" --report-md "$report" >/dev/null 2>&1; then
-    ok "generated report.md passes validate_report_format.py"
+  # Upstream retired validate_report_format.py. validate_scan_contract.py is the stronger
+  # gate: it re-reads the sealed bundle whole — manifest, findings, coverage and the
+  # generated report — and refuses anything the finalizer left inconsistent.
+  if "$PY" "$CXSEC_HOME/scripts/validate_scan_contract.py" --scan-dir "$tmp" >"$tmp/validate.log" 2>&1 \
+     && grep -q '"status": *"valid"' "$tmp/validate.log"; then
+    ok "sealed bundle re-validates: validate_scan_contract.py reports status valid"
   else
-    bad "generated report.md fails validate_report_format.py"
+    bad "sealed bundle fails validate_scan_contract.py:"
+    sed 's/^/         /' "$tmp/validate.log" >&2
+  fi
+
+  check_patch_risk_validator "$tmp"
+}
+
+# Mode 10's validator loads finalize_scan_contract.py by path and resolves the schema as
+# parents[3]/schemas. Prove both resolve, by rejecting an assessment we know is invalid:
+# a silent import or schema-path break would otherwise only surface mid-assessment.
+check_patch_risk_validator() {
+  local tmp="$1"
+  local v="$CXSEC_HOME/skills/assess-patch-risk/scripts/validate_patch_risk_assessment.py"
+  [ -f "$v" ] || return 0
+  printf '%s' '{"schemaVersion":"patch-risk-assessment/v0"}' >"$tmp/bad-assessment.json"
+  local out
+  out="$("$PY" "$v" "$tmp/bad-assessment.json" 2>&1)" && {
+    bad "patch-risk validator accepted an assessment missing every required field"; return; }
+  if printf '%s' "$out" | grep -qi 'traceback\|ModuleNotFoundError\|No such file'; then
+    bad "patch-risk validator crashed instead of rejecting: $(printf '%s' "$out" | tail -1)"
+  else
+    ok "patch-risk validator resolves its schema and rejects an invalid assessment"
   fi
 }
 
@@ -283,6 +325,22 @@ verify_all() {
 
 # ------------------------------------------------------------------- install
 
+# Nested vendor paths are copied with their upstream directory structure intact,
+# because the scripts inside them resolve the plugin root by counting parents.
+stage_skill_dirs() {
+  local src="$1" stage="$2" d
+  for d in ${VENDOR_SKILL_DIRS[@]+"${VENDOR_SKILL_DIRS[@]}"}; do
+    if [ -d "$src/$d" ]; then
+      mkdir -p "$stage/$(dirname "$d")"
+      cp -a "$src/$d" "$stage/$d"
+      find "$stage/$d" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
+      ok "$d/ ($(find "$stage/$d" -type f | wc -l) files)"
+    else
+      warn "$d/ not present at this source — mode 10 will have no assessment validator"
+    fi
+  done
+}
+
 # Copy the tree that ships in this repo. Already patched, so apply_patch will
 # report "already applied" rather than patching twice.
 stage_from_local() {
@@ -302,6 +360,7 @@ stage_from_local() {
       warn "$d/ not in the bundled runtime — skipped"
     fi
   done
+  stage_skill_dirs "$LOCAL_SRC" "$stage"
   for f in LICENSE PROVENANCE.md; do
     if [ -f "$LOCAL_SRC/$f" ]; then cp -a "$LOCAL_SRC/$f" "$stage/$f"; ok "$f"; fi
   done
@@ -332,7 +391,14 @@ fetch_and_stage() {
   root="$(find "$tmp" -maxdepth 1 -mindepth 1 -type d -name "*codex-security*" | head -1)"
   [ -n "$root" ] || die "unexpected tarball layout: no top-level source directory" 4
   local src="$root/$SRC_SUBDIR"
-  [ -d "$src" ] || die "$SRC_SUBDIR not found at this ref — upstream moved the bundled plugin" 4
+  if [ ! -d "$src" ]; then
+    warn "$SRC_SUBDIR not present at this ref — upstream moved the plugin again; searching for it"
+    local found
+    found="$(find "$root" -type f -name finalize_scan_contract.py -path '*/scripts/*' | head -1)"
+    [ -n "$found" ] || die "no scripts/finalize_scan_contract.py anywhere in the tarball — this ref does not ship the plugin runtime" 4
+    src="$(cd "$(dirname "$found")/.." && pwd)"
+    warn "found it at ${src#$root/} — update SRC_SUBDIR in this script"
+  fi
 
   step "Staging"
   mkdir -p "$stage"
@@ -345,6 +411,7 @@ fetch_and_stage() {
       warn "$d/ not present upstream at this ref — skipped"
     fi
   done
+  stage_skill_dirs "$src" "$stage"
   if [ -f "$root/LICENSE" ]; then
     cp -a "$root/LICENSE" "$stage/LICENSE"; ok "LICENSE"
   else
@@ -414,6 +481,7 @@ Full commit: \`$resolved\`
 Licensed Apache-2.0 (see LICENSE).
 
 Source path: \`$SRC_SUBDIR/{$(IFS=,; echo "${VENDOR_DIRS[*]}")}\`
+plus \`$SRC_SUBDIR/${VENDOR_SKILL_DIRS[0]}\`, kept at its upstream depth.
 
 Installed by \`cxsec-security/scripts/install.sh\` on $(date -u +%Y-%m-%dT%H:%M:%SZ).
 
@@ -421,7 +489,7 @@ This is the offline, model-agnostic half of the upstream plugin: stdlib-only Pyt
 that validates scan-contract artifacts and deterministically generates \`report.md\`
 and SARIF 2.1.0. It makes no network calls and needs no OpenAI credentials.
 
-The upstream MCP server (\`mcp/server.mjs\`) and the Codex-CLI-driven
+The upstream MCP server (\`mcp-app/\`) and the Codex-CLI-driven
 \`deep-security-scan\` worker fan-out are deliberately NOT vendored.
 
 Layout is load-bearing: \`finalize_scan_contract.py\` resolves schemas as
@@ -471,8 +539,18 @@ do_install() {
     fi
     cp -a "$stage/$d" "$CXSEC_HOME/$d"
   done
+  for d in ${VENDOR_SKILL_DIRS[@]+"${VENDOR_SKILL_DIRS[@]}"}; do
+    [ -d "$stage/$d" ] || continue
+    if [ -e "$CXSEC_HOME/$d" ]; then
+      local skill_backup="$CXSEC_HOME/$d.bak.$(date -u +%Y%m%dT%H%M%SZ)"
+      mv "$CXSEC_HOME/$d" "$skill_backup"
+      warn "existing $d/ moved to $(basename "$skill_backup")"
+    fi
+    mkdir -p "$CXSEC_HOME/$(dirname "$d")"
+    cp -a "$stage/$d" "$CXSEC_HOME/$d"
+  done
   if [ -f "$stage/LICENSE" ]; then cp -a "$stage/LICENSE" "$CXSEC_HOME/LICENSE"; fi
-  ok "vendored ${VENDOR_DIRS[*]}"
+  ok "vendored ${VENDOR_DIRS[*]} ${VENDOR_SKILL_DIRS[*]}"
 
   apply_patch
   write_provenance

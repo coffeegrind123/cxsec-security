@@ -1,14 +1,14 @@
 ---
 name: cxsec-security
-description: Application security review toolkit — scan a repository, PR, commit, branch diff, or working-tree patch for vulnerabilities; run a deep multi-pass scan; triage findings you already have from SARIF/CVEs/advisories/scanner tickets; fix and verify a finding; write a disclosure report; author or review a repository SECURITY.md; file findings as Linear/Jira/GitHub issues or a GitHub security advisory; or propose structural security hardening. Use for security audits, vulnerability hunting, appsec review, threat modeling, attack-path and severity analysis, exploitability triage, security regression review of a change set, and CWE/CVSS-grounded reporting with SARIF output. Triggered by requests like 'audit this repo for vulnerabilities', 'security review this PR', 'run a deep scan', 'is this CVE exploitable here', 'triage this SARIF', 'fix and verify this finding', 'write this up for disclosure', 'draft a SECURITY.md', 'file these findings in Linear'.
+description: Application security review toolkit — scan a repository, PR, commit, branch diff, or working-tree patch for vulnerabilities; run a deep multi-pass scan; triage findings you already have from SARIF/CVEs/advisories/scanner tickets; fix and verify a finding; assess how risky a patch is to merge; write a disclosure report; author or review a repository SECURITY.md; file findings as Linear/Jira/GitHub issues or a GitHub security advisory; or propose structural security hardening. Use for security audits, vulnerability hunting, appsec review, threat modeling, attack-path and severity analysis, exploitability triage, security regression review of a change set, and CWE/CVSS-grounded reporting with SARIF output. Triggered by requests like 'audit this repo for vulnerabilities', 'security review this PR', 'run a deep scan', 'is this CVE exploitable here', 'triage this SARIF', 'fix and verify this finding', 'is this patch safe to merge', 'write this up for disclosure', 'draft a SECURITY.md', 'file these findings in Linear'.
 license: Apache-2.0
-compatibility: Requires python3 and the vendored codex-security runtime at $CXSEC_HOME (default ~/.claude/codex-security), with scripts/ and schemas/ as siblings. Run scripts/install.sh to install or verify it. Modes 4 and 8 also need gh or a connected GitHub/Linear/Atlassian MCP server. Scanning makes no network calls.
+compatibility: Requires python3 3.11+ and the vendored codex-security runtime at $CXSEC_HOME (default ~/.claude/codex-security), with scripts/ and schemas/ as siblings. Run scripts/install.sh to install or verify it. Modes 4 and 8 also need gh or a connected GitHub/Linear/Atlassian MCP server. Scanning makes no network calls.
 allowed-tools: Bash(bash ~/.claude/skills/cxsec-security/scripts/install.sh:*) Bash(~/.claude/skills/cxsec-security/scripts/install.sh:*) Read Write Edit Glob Grep Task Agent AskUserQuestion TodoWrite WebFetch mcp__linear__* mcp__atlassian__* Bash(python3:*) Bash(python:*) Bash(git:*) Bash(gh:*) Bash(rg:*) Bash(grep:*) Bash(find:*) Bash(ls:*) Bash(cat:*) Bash(head:*) Bash(tail:*) Bash(wc:*) Bash(jq:*) Bash(sed:*) Bash(awk:*) Bash(sort:*) Bash(uniq:*) Bash(diff:*) Bash(file:*) Bash(mkdir:*) Bash(cp:*) Bash(mv:*) Bash(sha256sum:*) Bash(date:*) Bash(npm:*) Bash(pnpm:*) Bash(yarn:*) Bash(node:*) Bash(pytest:*) Bash(cargo:*) Bash(go:*) Bash(make:*)
 ---
 
 # Security Review Toolkit
 
-Nine workflows behind one entry point. **Pick the mode first, read only that mode's
+Ten workflows behind one entry point. **Pick the mode first, read only that mode's
 file, then follow it.** Do not read every reference — each mode names the further
 files it needs.
 
@@ -28,6 +28,7 @@ column; use it when two modes look close.
 | 7 | **Policy** | Author, review, or update a repository `SECURITY.md`. | `references/mode-policy.md` |
 | 8 | **Track** | File findings as Linear/Jira/GitHub issues, or a draft GitHub security advisory. | `references/mode-track.md` |
 | 9 | **Harden** | Structural or architectural improvements beyond per-finding patches; before/after views, tradeoffs, migration plan. | `references/mode-harden.md` |
+| 10 | **Patch risk** | Asked how risky a specific patch, PR diff, or commit range is to *merge* — impact, regression likelihood, test protection, recoverability, auto-merge eligibility. Read-only. | `references/mode-patch-risk.md` |
 
 ### Disambiguation
 
@@ -42,8 +43,13 @@ column; use it when two modes look close.
   finding that already exists and are frequently chained after 1–4.
 - **"How do we stop this whole class of bug?" → 9, not 5.** Mode 5 patches one
   instance; mode 9 changes the structure.
-- Modes 1–3 invoke phases 1–4 internally. **Never select a phase file as the
-  entry point** — `phase-*.md` files are steps inside a scan, not modes.
+- **"Is this patch safe to merge?" → 10, not 2.** Mode 2 hunts for vulnerabilities
+  in a change set; mode 10 assesses merge risk for an immutable patch artifact and
+  never edits, applies, or merges it.
+- **Only mode 2 runs the four phases.** Modes 1 and 3 perform the single
+  self-contained audit in `references/core-scan.md` instead — no ranked worklists,
+  no per-candidate ledgers, no phase fan-out. **Never select a phase file as the
+  entry point**: `phase-*.md` files are steps inside a diff scan, not modes.
 - If the request genuinely spans modes (for example "scan this repo and file what
   you find"), run them in sequence and say which you are doing. If the mode is
   ambiguous and the wrong pick would waste substantial work, ask.
@@ -51,22 +57,24 @@ column; use it when two modes look close.
 ## Before any scan mode (1, 2, 3)
 
 1. Read `references/workbench-file-protocol.md`. It defines `<scan_dir>`,
-   `scan-context.json`, the candidate and receipt ledgers, subagent fan-out, and
-   the finalizer. **Upstream drove all of this through an MCP server that is not
-   available here** — that file is the authoritative file-based replacement, and
-   the mode files assume you have read it.
+   `scan-context.json`, the checkpoints, the candidate and receipt ledgers,
+   subagent fan-out, and the finalizer. **Upstream drove all of this through an
+   MCP server that is not available here** — that file is the authoritative
+   file-based replacement, and the mode files assume you have read it.
 2. Read `references/hard-rules.md`.
-3. Run the capability preflight in `references/config-preflight.md`.
+3. Run the capability preflight in `references/config-preflight.md` — **modes 1
+   and 2 only**. A deep scan has no parent capability preflight; do not run the
+   helper for it.
 
-Modes 4–9 are standalone and do not need a `<scan_dir>` unless the user supplies
+Modes 4–10 are standalone and do not need a `<scan_dir>` unless the user supplies
 one.
 
 ## Runtime
 
 The vendored Python runtime lives at `$CXSEC_HOME`, default
-`~/.claude/codex-security`. It is stdlib-only, makes no network calls, and needs no
-credentials. `scripts/` and `schemas/` must stay siblings — the finalizer resolves
-schemas as `<script_parent>/../schemas`.
+`~/.claude/codex-security`. It is stdlib-only on Python 3.11+, makes no network
+calls, and needs no credentials. `scripts/` and `schemas/` must stay siblings —
+the finalizer resolves schemas as `<script_parent>/../schemas`.
 
 **If `$CXSEC_HOME` is absent, or any scan step reports a missing script, schema, or
 schema-resolution error, install or repair it before continuing:**
@@ -132,21 +140,23 @@ Read on demand; do not preload.
 
 **Modes** — `mode-repo-scan.md`, `mode-diff-scan.md`, `mode-deep-scan.md`,
 `mode-triage.md`, `mode-fix.md`, `mode-writeup.md`, `mode-policy.md`,
-`mode-track.md`, `mode-harden.md`
+`mode-track.md`, `mode-harden.md`, `mode-patch-risk.md`
 
-**Scan phases** (internal to modes 1–3, in order) — `phase-1-threat-model.md`,
+**Audit engine** (modes 1 and 3) — `core-scan.md`, `threat-model.md`
+
+**Scan phases** (internal to mode 2, in order) — `phase-1-threat-model.md`,
 `phase-2-discovery.md`, `phase-3-validation.md`, `phase-4-attack-path.md`
 
 **Contracts and shared rules** — `workbench-file-protocol.md`, `hard-rules.md`,
 `scan-artifacts.md`, `scan-artifacts-and-ledger.md`, `scan-contract.md`,
 `final-report.md`, `finding-detail-fields.md`, `sarif-adapter.md`,
-`config-preflight.md`, `security-guidance.md`, `repository-wide-scan.md`,
+`config-preflight.md`, `security-guidance.md`,
 `install.md` (runtime install, verification failures, re-vendoring, offline hosts)
 
 **Depth references** — `validation-guidance.md` (per-class proof tuples; the
-densest file here), `threat-model-guidance.md`, `attack-path-facts.md`,
-`severity-policy.md`, `static-finding-assessment.md`, `proposal-format.md`,
-`report-format.md`, `triage-result-contract.md`, `ticket-intake.md`,
+densest file here), `attack-path-facts.md`, `severity-policy.md`,
+`static-finding-assessment.md`, `proposal-format.md`, `report-format.md`,
+`risk-rubric.md`, `triage-result-contract.md`, `ticket-intake.md`,
 `github-rest-intake.md`, `github-security-advisories.md`, `jira.md`
 
 ## Provenance

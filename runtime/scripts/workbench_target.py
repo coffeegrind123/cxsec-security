@@ -25,8 +25,8 @@ def git_output(
     git_dir: Path | None = None,
     work_tree: Path | None = None,
 ) -> str | None:
-    completed = git_command(target, *args, text=True, git_dir=git_dir, work_tree=work_tree)
-    output = completed.stdout.strip()
+    completed = git_command(target, *args, text=False, git_dir=git_dir, work_tree=work_tree)
+    output = os.fsdecode(completed.stdout).strip()
     return output if completed.returncode == 0 and output else None
 
 
@@ -40,10 +40,91 @@ def git_bytes(
     return completed.stdout if completed.returncode == 0 else None
 
 
+def git_blob_bytes(
+    target: Path,
+    object_names: list[str],
+    *,
+    git_dir: Path | None = None,
+    work_tree: Path | None = None,
+) -> list[bytes | None]:
+    """Read ordered raw blobs with one NUL-framed ``git cat-file --batch`` call."""
+    if not object_names:
+        return []
+
+    request = b"\0".join(os.fsencode(name) for name in object_names) + b"\0"
+    completed = git_command(
+        target,
+        "cat-file",
+        "--batch",
+        "-Z",
+        text=False,
+        input_data=request,
+        git_dir=git_dir,
+        work_tree=work_tree,
+    )
+    if completed.returncode != 0:
+        return [None] * len(object_names)
+
+    try:
+        return _decode_git_batch_blobs(completed.stdout, len(object_names))
+    except ValueError:
+        return [None] * len(object_names)
+
+
+def _decode_git_batch_blobs(output: bytes, count: int) -> list[bytes | None]:
+    """Decode ordered ``cat-file --batch -Z`` records without scanning blob bytes."""
+    blobs: list[bytes | None] = []
+    offset = 0
+    for _ in range(count):
+        header, offset = _read_nul_field(output, offset)
+        size = _git_batch_blob_size(header)
+        if size is None:
+            blobs.append(None)
+            continue
+        blob, offset = _read_sized_nul_field(output, offset, size)
+        blobs.append(blob)
+    return blobs
+
+
+def _read_nul_field(output: bytes, offset: int) -> tuple[bytes, int]:
+    """Read one NUL-terminated protocol field and return the next offset."""
+    end = output.find(b"\0", offset)
+    if end < 0:
+        raise ValueError("missing NUL terminator")
+    return output[offset:end], end + 1
+
+
+def _git_batch_blob_size(header: bytes) -> int | None:
+    """Return a blob header's byte count, or ``None`` for a non-blob record."""
+    fields = header.rsplit(b" ", 2)
+    if len(fields) != 3 or fields[1] != b"blob":
+        return None
+    try:
+        size = int(fields[2])
+    except ValueError as error:
+        raise ValueError("invalid blob size") from error
+    if size < 0:
+        raise ValueError("invalid blob size")
+    return size
+
+
+def _read_sized_nul_field(
+    output: bytes,
+    offset: int,
+    size: int,
+) -> tuple[bytes, int]:
+    """Read exactly ``size`` blob bytes followed by one NUL record terminator."""
+    end = offset + size
+    if output[end : end + 1] != b"\0":
+        raise ValueError("missing blob terminator")
+    return output[offset:end], end + 1
+
+
 def git_command(
     target: Path,
     *args: str,
     text: bool,
+    input_data: str | bytes | None = None,
     git_dir: Path | None = None,
     work_tree: Path | None = None,
 ) -> subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]:
@@ -54,7 +135,15 @@ def git_command(
         environment.pop(name, None)
     environment["GIT_LITERAL_PATHSPECS"] = "1"
     # Repository-local config is untrusted; fsmonitor may name an executable hook.
-    command = ["git", "-c", "core.fsmonitor=false", "-C", str(target)]
+    command = [
+        "git",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "i18n.logOutputEncoding=UTF-8",
+        "-C",
+        str(target),
+    ]
     if git_dir is not None and work_tree is not None:
         command.extend(["--git-dir", str(git_dir), "--work-tree", str(work_tree)])
     full_command = [*command, *args]
@@ -65,6 +154,9 @@ def git_command(
             capture_output=True,
             env=environment,
             text=text,
+            encoding="utf-8" if text else None,
+            errors="surrogateescape" if text else None,
+            input=input_data,
         )
     except FileNotFoundError:
         # Git is optional for Codebase scans. Treat an unavailable executable like
@@ -84,6 +176,24 @@ def worktree_content_digest(target: Path) -> str:
     require_clean_submodule_worktrees(target)
     repository, pathspec = git_worktree_context(target)
     return worktree_content_digest_for_context(repository, pathspec)
+
+
+def remediation_checkout_snapshot(
+    scan: sqlite3.Row, *, expected_revision: str | None = None
+) -> tuple[str, str | None]:
+    target = require_scan_target_identity(scan)
+    revision = git_revision(target)
+    required_revision = expected_revision or scan["target_revision"]
+    if revision != required_revision:
+        raise SystemExit(
+            "Repository HEAD changed. Regenerate the remediation patch against the current checkout."
+        )
+    content_digest = (
+        worktree_content_digest(target)
+        if revision != "unversioned"
+        else directory_content_digest(target, excluded=(Path(scan["scan_dir"]),))
+    )
+    return revision, content_digest
 
 
 def worktree_content_digest_for_context(
@@ -304,14 +414,38 @@ def git_directory_snapshot_paths(target: Path) -> list[Path] | None:
     return sorted(set(paths))
 
 
-def directory_content_digest(target: Path, *, excluded: tuple[Path, ...] = ()) -> str:
+def source_directory_snapshot_paths(target: Path) -> list[Path]:
+    paths: list[Path] = []
+    pending = [target]
+    while pending:
+        for path in pending.pop().iterdir():
+            if path.name == ".git":
+                continue
+            paths.append(path)
+            metadata = path.lstat()
+            # Name-surrogate reparse points include Windows directory junctions.
+            if (
+                stat.S_ISDIR(metadata.st_mode)
+                and not getattr(metadata, "st_reparse_tag", 0) & 0x20000000
+            ):
+                pending.append(path)
+    return sorted(paths)
+
+
+def directory_content_digest(
+    target: Path, *, excluded: tuple[Path, ...] = (), include_ignored: bool = False
+) -> str:
     excluded_relative = []
     for path in excluded:
         try:
             excluded_relative.append(path.relative_to(target))
         except ValueError:
             continue
-    paths = git_directory_snapshot_paths(target)
+    paths = (
+        source_directory_snapshot_paths(target)
+        if include_ignored
+        else git_directory_snapshot_paths(target)
+    )
     if paths is None:
         paths = sorted(target.rglob("*"))
     digest = hashlib.sha256()
@@ -330,7 +464,9 @@ def directory_content_digest(target: Path, *, excluded: tuple[Path, ...] = ()) -
         raw_path = os.fsencode(relative_path.as_posix())
         update_digest_field(digest, b"path", raw_path)
         update_digest_field(digest, b"mode", str(stat.S_IMODE(metadata.st_mode)).encode())
-        if stat.S_ISLNK(metadata.st_mode):
+        if stat.S_ISLNK(metadata.st_mode) or (
+            include_ignored and getattr(metadata, "st_reparse_tag", 0) & 0x20000000
+        ):
             update_digest_field(digest, b"kind", b"symlink")
             update_digest_field(digest, b"content", os.fsencode(os.readlink(path)))
         elif stat.S_ISDIR(metadata.st_mode):
@@ -431,7 +567,7 @@ def copy_git_worktree_files(source: Path, destination: Path, excluded: tuple[Pat
             if nested_git_dir is None:
                 raise SystemExit(f"Could not inspect nested Git working tree: {relative}")
             copy_git_worktree_files(source_path, destination_path, excluded)
-            (destination_path / ".git").write_text(f"gitdir: {nested_git_dir}\n")
+            (destination_path / ".git").write_text(f"gitdir: {nested_git_dir}\n", encoding="utf-8")
         else:
             raise SystemExit(f"Unsupported Git working-tree file type: {relative}")
     copied_target = destination if pathspec == "." else destination / pathspec
@@ -466,9 +602,10 @@ def git_target_metadata(target: Path) -> dict[str, Any]:
     branch = git_output(target, "symbolic-ref", "--quiet", "--short", "HEAD")
     metadata.update({"branch": branch, "detachedHead": revision is not None and branch is None})
     if revision is not None:
+        subject = git_bytes(target, "show", "-s", "--format=%s", "HEAD")
         metadata.update(
             {
-                "commitSubject": git_output(target, "show", "-s", "--format=%s", "HEAD"),
+                "commitSubject": (subject or b"").decode("utf-8").strip() or None,
                 "revision": revision,
                 "shortRevision": revision[:7],
             }
@@ -495,9 +632,8 @@ def require_remediation_target(value: str) -> Path:
 
 def require_scan_target_identity(scan: sqlite3.Row) -> Path:
     target = require_remediation_target(scan["target_path"])
-    expected_device = scan["target_device"]
     expected_inode = scan["target_inode"]
-    if expected_device is None or expected_inode is None:
+    if expected_inode is None:
         raise SystemExit(
             "Remediation is unavailable because this scan does not record checkout identity. "
             "Start a new scan."
@@ -508,10 +644,7 @@ def require_scan_target_identity(scan: sqlite3.Row) -> Path:
         raise SystemExit(
             "Remediation is unavailable because the selected checkout is no longer accessible."
         ) from exc
-    if not (
-        stored_filesystem_identity_matches(expected_device, metadata.st_dev)
-        and stored_filesystem_identity_matches(expected_inode, metadata.st_ino)
-    ):
+    if not stored_filesystem_identity_matches(expected_inode, metadata.st_ino):
         raise SystemExit(
             "Remediation is unavailable because the selected checkout path was replaced. "
             "Start a new scan."

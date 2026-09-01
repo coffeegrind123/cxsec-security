@@ -18,6 +18,10 @@ from workbench_scan_usage import stored_scan_cost_fields
 from workbench_target import git_output
 
 
+def _windows_path_key(value: str) -> str:
+    return os.path.normcase(os.path.realpath(value))
+
+
 def _same_repository(
     before: sqlite3.Row,
     after: sqlite3.Row,
@@ -75,63 +79,11 @@ def _repository_origin(target: Path) -> tuple[str, str] | None:
     return (host.lower(), path) if host and path else None
 
 
-def list_workspace_scans(
-    connection: sqlite3.Connection,
-    args: argparse.Namespace,
-    *,
-    require_workspace: Callable[[sqlite3.Connection, str], sqlite3.Row],
-) -> dict[str, Any]:
-    workspace = require_workspace(connection, args.workspace_id)
-    total = connection.execute(
-        "SELECT COUNT(*) FROM scans WHERE workspace_id = ?", (workspace["id"],)
-    ).fetchone()[0]
-    rows = connection.execute(
-        """
-        SELECT id, mode, status, phase, scope, target_revision,
-            seal_manifest_digest, started_at, completed_at, canceled_at,
-            updated_at, failure_message, completion_warnings_json
-        FROM scans
-        WHERE workspace_id = ?
-        ORDER BY created_at DESC, id DESC
-        LIMIT ? OFFSET ?
-        """,
-        (workspace["id"], args.limit, args.offset),
-    ).fetchall()
-    next_offset = args.offset + len(rows)
-    return {
-        "limit": args.limit,
-        "nextOffset": next_offset if next_offset < total else None,
-        "offset": args.offset,
-        "scans": [
-            {
-                "canceledAt": row["canceled_at"],
-                "completedAt": row["completed_at"],
-                "failureMessage": row["failure_message"],
-                "mode": row["mode"],
-                "phase": row["phase"],
-                "scanId": row["id"],
-                "scope": row["scope"],
-                "sealed": row["seal_manifest_digest"] is not None,
-                "startedAt": row["started_at"],
-                "status": "canceled" if row["canceled_at"] else row["status"],
-                "targetRevision": row["target_revision"],
-                "updatedAt": row["updated_at"],
-                **(
-                    {"warnings": json.loads(row["completion_warnings_json"])}
-                    if row["completion_warnings_json"] != "[]"
-                    else {}
-                ),
-            }
-            for row in rows
-        ],
-        "total": total,
-        "workspaceId": workspace["id"],
-    }
-
-
 def list_scans(
     connection: sqlite3.Connection, args: argparse.Namespace | None = None
 ) -> dict[str, Any]:
+    if os.name == "nt":
+        connection.create_function("codex_security_path_key", 1, _windows_path_key)
     clauses: list[str] = []
     values: list[Any] = []
     if args is not None and args.repository:
@@ -164,7 +116,15 @@ def list_scans(
     if args is not None and args.scan_root:
         scan_root = str(Path(args.scan_root).expanduser().resolve())
         prefix = scan_root.rstrip(os.sep) + os.sep
-        clauses.append("(scans.scan_dir = ? OR substr(scans.scan_dir, 1, ?) = ?)")
+        if os.name == "nt":
+            scan_root = _windows_path_key(scan_root)
+            prefix = scan_root.rstrip(os.sep) + os.sep
+            clauses.append(
+                "(codex_security_path_key(scans.scan_dir) = ? "
+                "OR substr(codex_security_path_key(scans.scan_dir), 1, ?) = ?)"
+            )
+        else:
+            clauses.append("(scans.scan_dir = ? OR substr(scans.scan_dir, 1, ?) = ?)")
         values.extend((scan_root, len(prefix), prefix))
     if args is not None and args.target_id:
         clauses.append("scans.target_id = ?")
@@ -310,7 +270,7 @@ def list_unmatched_scan_pairs(
     }
     batches = []
     skipped = 0
-    backfilled: set[str] = set()
+    matching_findings: dict[str, list[dict[str, Any]]] = {}
     for index, after in enumerate(available):
         previous = [
             before
@@ -321,21 +281,18 @@ def list_unmatched_scan_pairs(
         if not previous:
             continue
         for scan in (*previous, after):
-            if scan["id"] not in backfilled:
+            if scan["id"] not in matching_findings:
                 backfill_finding_details(connection, scan)
-                backfilled.add(scan["id"])
+                matching_findings[scan["id"]] = [
+                    _matching_input(row) for row in _scan_findings(connection, scan["id"]).values()
+                ]
         batches.append(
             {
-                "afterFindings": [
-                    _matching_input(row) for row in _scan_findings(connection, after["id"]).values()
-                ],
+                "afterFindings": matching_findings[after["id"]],
                 "afterScanId": after["id"],
                 "beforeScans": [
                     {
-                        "findings": [
-                            _matching_input(row)
-                            for row in _scan_findings(connection, before["id"]).values()
-                        ],
+                        "findings": matching_findings[before["id"]],
                         "scanId": before["id"],
                     }
                     for before in previous
@@ -512,8 +469,9 @@ def save_scan_comparison(
     read_coverage(after)
     before_findings = _scan_findings(connection, before["id"])
     after_findings = _scan_findings(connection, after["id"])
+    matches_json = sys.stdin.read() if args.matches_json_stdin else args.matches_json
     try:
-        payload = json.loads(args.matches_json)
+        payload = json.loads(matches_json)
     except (TypeError, ValueError) as exc:
         raise SystemExit("Scan comparison matches must be a valid JSON object.") from exc
     if not isinstance(payload, dict) or set(payload) != {"matches", "uncertain"}:

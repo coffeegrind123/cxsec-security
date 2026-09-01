@@ -14,6 +14,25 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from workbench_constants import CLAIM_LEASE_SECONDS, DELIVERED_ACTION_LEASE_SECONDS
 from workbench_validation import require_occurrence, require_uuid
 
+COMMANDS = {
+    "request-finding-remediation",
+    "request-finding-remediation-action",
+    "claim-finding-remediation-resend",
+    "mark-finding-remediation-delivered",
+    "release-finding-remediation-claim",
+    "cancel-finding-remediation-request",
+    "set-finding-remediation",
+}
+SCAN_STATUS_ERROR = "Remediation is available only for successfully completed scans."
+
+
+def require_available(connection: sqlite3.Connection, args: Any, require_scan: Any) -> None:
+    if args.command not in COMMANDS:
+        return
+    occurrence = require_occurrence(connection, args.occurrence_id)
+    if require_scan(connection, occurrence["scan_id"])["status"] != "complete":
+        raise SystemExit(SCAN_STATUS_ERROR)
+
 
 def remediation_claim_is_active(remediation: sqlite3.Row) -> bool:
     if remediation["pending_action_claim_token"] is None:
@@ -23,6 +42,8 @@ def remediation_claim_is_active(remediation: sqlite3.Row) -> bool:
     if not isinstance(claimed_at, str):
         return True
     try:
+        if claimed_at.endswith(("Z", "z")):
+            claimed_at = claimed_at[:-1] + "+00:00"
         parsed = datetime.fromisoformat(claimed_at)
         if parsed.tzinfo is None:
             return True
@@ -30,6 +51,43 @@ def remediation_claim_is_active(remediation: sqlite3.Row) -> bool:
         return True
     lease_seconds = DELIVERED_ACTION_LEASE_SECONDS if delivered_at else CLAIM_LEASE_SECONDS
     return parsed > datetime.now(timezone.utc) - timedelta(seconds=lease_seconds)
+
+
+def require_transition(current: str, requested: str) -> None:
+    allowed = {
+        "requested": {"requested", "generated", "failed"},
+        "generated": {"generated", "applied", "failed"},
+        "applied": {"applied", "verifying", "failed"},
+        "verifying": {"verifying", "verified", "failed"},
+        "verified": {"verifying", "verified"},
+        "failed": {"generated", "applied", "verifying", "verified", "failed"},
+    }
+    if requested not in allowed.get(current, set()):
+        raise SystemExit(f"Finding remediation cannot move from {current} to {requested}.")
+
+
+def require_pending_action(current: sqlite3.Row, requested: str) -> None:
+    pending_action = current["pending_action"]
+    if pending_action is not None:
+        allowed = {
+            "generate": {"generated", "failed"},
+            "apply": {"applied", "failed"},
+            "verify": {"verifying", "verified", "failed"},
+        }
+        if requested not in allowed[pending_action]:
+            raise SystemExit(
+                f"Pending remediation action {pending_action} cannot record state {requested}."
+            )
+        return
+    required_action = {
+        ("requested", "generated"): "generate",
+        ("generated", "applied"): "apply",
+        ("applied", "verifying"): "verify",
+    }.get((current["state"], requested))
+    if required_action is not None:
+        raise SystemExit(
+            f"Request {required_action} before recording remediation state {requested}."
+        )
 
 
 def register_cancel_finding_remediation_request(subparsers: Any) -> None:
