@@ -1252,12 +1252,9 @@ def _normalize_unsealed_deep_repository_inventory_strategy(
     *,
     expected_coverage_mode: str | None,
 ) -> None:
-    """Normalize the old Deep workflow label to the ordinary repository inventory."""
+    """Label whole-repository Deep scans as using the repository inventory."""
 
-    if (
-        expected_coverage_mode == "deep_repository"
-        and coverage.get("inventoryStrategy") == "deep_repository_repeated_discovery"
-    ):
+    if expected_coverage_mode == "deep_repository":
         coverage["inventoryStrategy"] = "repository"
 
 
@@ -2682,6 +2679,8 @@ def _prepare_scan_finalization(
         else _read_scan_local_json(scan_dir, "scan-manifest.json", "scan-manifest.json")
     )
     scan = _require_dict(manifest, "scan", "manifest")
+    if scan.get("sealedAt") is None and scan.get("artifacts") == []:
+        del scan["artifacts"]
     was_sealed = scan.get("sealedAt") is not None or scan.get("artifacts") is not None
     if not was_sealed:
         _populate_unsealed_manifest_envelope(manifest, scan, completion_binding)

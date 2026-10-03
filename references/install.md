@@ -32,7 +32,7 @@ Into `$CXSEC_HOME` (default `~/.claude/codex-security`), from
 
 | Directory | Contents |
 |---|---|
-| `scripts/` | 39 stdlib-only Python helpers, including the `workbench/` subpackage. No pip install, no network calls. |
+| `scripts/` | 40 stdlib-only Python helpers from upstream (the `workbench/` subpackage included), plus the carried `resolve_security_md.py` (a local addition — see `patches/README.md`). No pip install, no network calls. |
 | `schemas/` | 13 JSON Schemas for the scan contract and patch-risk assessment. |
 | `references/` | Upstream shared reference set. |
 | `preflight/` | `capability-profiles.toml` — capability gate definitions. |

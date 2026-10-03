@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import copy
 import hashlib
 import json
 import os
 import re
+import sqlite3
 import stat
 import sys
 from collections.abc import Callable, Iterator
@@ -34,6 +36,8 @@ from finalize_scan_contract import (
     open_scan_local_file_descriptor,
     write_scan_local_bytes,
 )
+from workbench_constants import PHASES
+from workbench_target import committed_diff_snapshot_digest
 from workbench_validation import path_within_scope
 
 _PUBLISHED_OUTPUTS = (
@@ -46,6 +50,9 @@ _PUBLISHED_OUTPUTS = (
 )
 _PUBLICATION_FOLLOW_UP_WARNING = (
     "Saved scan evidence remains on disk; result publication needs follow-up:"
+)
+_RESERVED_ARTIFACT_PATHS = json.loads(
+    Path(__file__).with_name("reserved_artifact_paths.json").read_text(encoding="utf-8")
 )
 
 
@@ -112,13 +119,13 @@ def _latest_successful_reducer(workers: list[Any]) -> Any | None:
     )
 
 
-def _saved_result_paths(scan_dir: Path, workers: list[Any]) -> Iterator[str]:
+def _saved_result_paths(scan_dir: Path, workers: list[Any]) -> Iterator[tuple[str, str | None]]:
     latest_reducer = _latest_successful_reducer(workers)
 
-    def checkpoints(directory: str) -> Iterator[str]:
+    def checkpoints(directory: str, kind: str | None = None) -> Iterator[tuple[str, str | None]]:
         for name in _children(scan_dir, directory):
             if re.fullmatch(r"[0-9a-f]{64}\.json", name):
-                yield f"{directory}/{name}"
+                yield f"{directory}/{name}", kind
 
     yield from checkpoints("checkpoints")
     for worker in workers:
@@ -137,25 +144,32 @@ def _saved_result_paths(scan_dir: Path, workers: list[Any]) -> Iterator[str]:
             if re.fullmatch(r"attempt-\d+", name)
         ]
         for directory in directories:
-            checkpoint_paths = list(checkpoints(f"{directory}/checkpoints"))
+            checkpoint_paths = list(checkpoints(f"{directory}/checkpoints", worker["kind"]))
             if worker["kind"] == "discovery" or checkpoint_paths:
-                yield f"{directory}/result.json"
+                yield f"{directory}/result.json", worker["kind"]
                 yield from checkpoint_paths
         if worker["result_manifest_path"] and (
             worker["kind"] == "discovery"
             or (latest_reducer is not None and worker["id"] == latest_reducer["id"])
         ):
             try:
-                yield Path(worker["result_manifest_path"]).relative_to(scan_dir).as_posix()
+                yield (
+                    Path(worker["result_manifest_path"]).relative_to(scan_dir).as_posix(),
+                    worker["kind"],
+                )
             except ValueError:
                 continue
 
 
-def _read_saved_result(scan_dir: Path, relative: str, scan_id: str) -> tuple[dict[str, Any], str]:
+def _read_saved_result(
+    scan_dir: Path, relative: str, scan_id: str, *, kind: str | None = None
+) -> tuple[dict[str, Any], str]:
     draft = _read_scan_local_json(scan_dir, relative, "Saved scan checkpoint")
     if draft.get("scanId") != scan_id:
         raise ContractError("checkpoint belongs to a different scan")
-    if not isinstance(draft.get("findings"), list) or not isinstance(draft.get("coverage"), dict):
+    if not isinstance(draft.get("findings"), list) or not isinstance(
+        draft.get("coverage", {} if kind == "dedup" else None), dict
+    ):
         raise ContractError("checkpoint has no semantic findings or coverage")
     return draft, _digest(draft)
 
@@ -207,13 +221,13 @@ def _saved_results_changed(db: Any, connection: Any, scan: Any) -> bool:
             "FROM deep_scan_workers WHERE scan_id = ?",
             (scan["id"],),
         ).fetchall()
-        paths = set(_saved_result_paths(scan_dir, workers))
+        paths = dict(_saved_result_paths(scan_dir, workers))
         frozen_sources = scan["retained_source_digests_json"]
 
         def has_saved_source() -> bool:
             for path in paths:
                 try:
-                    _read_saved_result(scan_dir, path, scan["id"])
+                    _read_saved_result(scan_dir, path, scan["id"], kind=paths[path])
                     return True
                 except (ContractError, OSError, ValueError):
                     continue
@@ -244,7 +258,9 @@ def _saved_results_changed(db: Any, connection: Any, scan: Any) -> bool:
         current_sources = dict(published_sources)
         for path in paths:
             try:
-                _, current_sources[path] = _read_saved_result(scan_dir, path, scan["id"])
+                _, current_sources[path] = _read_saved_result(
+                    scan_dir, path, scan["id"], kind=paths[path]
+                )
             except (ContractError, OSError, ValueError):
                 continue
         return current_sources != published_sources
@@ -290,23 +306,26 @@ def _recovery_source_digests(db: Any, connection: Any, scan: Any) -> tuple[dict[
             else:
                 include_parent = True
 
-    recovery_sources = dict(frozen_sources or {})
-    for relative, expected_digest in recovery_sources.items():
-        try:
-            _, digest = _read_saved_result(scan_dir, relative, scan["id"])
-        except (ContractError, OSError, ValueError) as exc:
-            raise ContractError("Frozen stopped-scan checkpoint set is incomplete.") from exc
-        if digest != expected_digest:
-            raise ContractError("checkpoint changed after the scan stopped")
-
     workers = connection.execute(
         "SELECT id, kind, status, completed_at, artifact_dir, result_manifest_path "
         "FROM deep_scan_workers WHERE scan_id = ?",
         (scan["id"],),
     ).fetchall()
-    for relative in set(_saved_result_paths(scan_dir, workers)) - recovery_sources.keys():
+    paths = dict(_saved_result_paths(scan_dir, workers))
+    recovery_sources = dict(frozen_sources or {})
+    for relative, expected_digest in recovery_sources.items():
         try:
-            _, recovery_sources[relative] = _read_saved_result(scan_dir, relative, scan["id"])
+            _, digest = _read_saved_result(scan_dir, relative, scan["id"], kind=paths.get(relative))
+        except (ContractError, OSError, ValueError) as exc:
+            raise ContractError("Frozen stopped-scan checkpoint set is incomplete.") from exc
+        if digest != expected_digest:
+            raise ContractError("checkpoint changed after the scan stopped")
+
+    for relative in paths.keys() - recovery_sources.keys():
+        try:
+            _, recovery_sources[relative] = _read_saved_result(
+                scan_dir, relative, scan["id"], kind=paths[relative]
+            )
         except (ContractError, OSError, ValueError):
             continue
     return recovery_sources, include_parent
@@ -489,6 +508,7 @@ def merge_saved_results(
             parent_preserved_sources = recorded
             source_digests.update(parent_preserved_sources)
     paths: dict[str, str | None] = {}
+    reducer_paths: set[str] = set()
     current_results: set[str] = set()
     reducer_outputs: list[tuple[Any, str, list[str], int]] = []
     reducer = _latest_successful_reducer(workers)
@@ -497,6 +517,7 @@ def merge_saved_results(
         try:
             latest_reducer = Path(reducer["result_manifest_path"]).relative_to(scan_dir).as_posix()
             paths[latest_reducer] = None
+            reducer_paths.add(latest_reducer)
         except ValueError:
             warnings.append("Skipped a reducer result outside the scan directory.")
 
@@ -526,6 +547,7 @@ def merge_saved_results(
                 paths[result_path] = None
                 for checkpoint_path in checkpoint_paths:
                     paths[checkpoint_path] = None
+                reducer_paths.update([result_path, *checkpoint_paths])
                 reducer_outputs.append((reducer_worker, result_path, checkpoint_paths, attempt))
 
             reducer_output(output, int(worker["attempt"] or 0), worker)
@@ -570,11 +592,15 @@ def merge_saved_results(
 
     for relative, worker_id in paths.items():
         try:
-            draft, digest = _read_saved_result(scan_dir, relative, scan_id)
+            draft, digest = _read_saved_result(
+                scan_dir, relative, scan_id, kind="dedup" if relative in reducer_paths else None
+            )
             if frozen_source_digests is not None and frozen_source_digests[relative] != digest:
                 raise ContractError("checkpoint changed after the scan stopped")
             source_digests[relative] = digest
-            sources.append((relative, draft, worker_id))
+            # Recovery expects coverage, but reducer results only contain findings
+            # and context. Add an empty value after hashing the original result.
+            sources.append((relative, {"coverage": {}, **draft}, worker_id))
         except (ContractError, OSError, ValueError) as exc:
             if (scan_dir / relative).exists():
                 warnings.append(f"Preserved unreadable checkpoint {relative}: {exc}")
@@ -626,15 +652,9 @@ def merge_saved_results(
     target = {"kind": target_kind, **binding["target"]}
     if target["kind"] == "git_diff" and "snapshotDigest" not in target:
         diff_kind = {"commit": "commit", "branch_diff": "range"}[binding["coverageMode"]]
-        digest = hashlib.sha256(
-            b"codex-security-diff/v1\0"
-            + diff_kind.encode()
-            + b"\0"
-            + target["baseRevision"].encode()
-            + b"\0"
-            + target["headRevision"].encode()
-        ).hexdigest()
-        target["snapshotDigest"] = f"codex-security-snapshot/v1:sha256:{digest}"
+        target["snapshotDigest"] = committed_diff_snapshot_digest(
+            diff_kind, target["baseRevision"], target["headRevision"]
+        )
     manifest = (
         copy.deepcopy(parent_manifest)
         if parent_manifest
@@ -645,7 +665,7 @@ def merge_saved_results(
     manifest["scan"]["preservedSources"] = source_digests
     coverage = (
         copy.deepcopy(parent["coverage"])
-        if parent
+        if parent and parent["coverage"]
         else {
             "completeness": "partial",
             "mode": binding["coverageMode"],
@@ -660,6 +680,11 @@ def merge_saved_results(
             "deferred": [],
         }
     )
+    if isinstance(coverage.get("openQuestions"), list):
+        coverage["openQuestions"] = [
+            {"question": item.strip()} if isinstance(item, str) else item
+            for item in coverage["openQuestions"]
+        ]
     canonical_rows = (
         {
             id(item)
@@ -1160,6 +1185,7 @@ def preserve_scan_results_locked(
 
     existing_path = db.artifact_path(scan_dir, db.ARTIFACTS["manifest"], required=False)
     existing_scan = db.read_json_object(existing_path).get("scan", {}) if existing_path else {}
+    existing = None
     if scan["seal_manifest_digest"] is not None or (
         isinstance(existing_scan, dict)
         and (
@@ -1191,7 +1217,10 @@ def preserve_scan_results_locked(
                 return True
             if recovery_source_digests is None:
                 raise ContractError("Stopped scan sources changed after terminal publication.")
-    binding = {**db.workbench_completion_binding(scan, scan["completed_at"]), "status": outcome}
+    binding = {
+        **db.workbench_completion_binding(scan, scan["completed_at"], existing),
+        "status": outcome,
+    }
     documents = merge_saved_results(
         scan_dir,
         scan_id,
@@ -1235,7 +1264,6 @@ def preserve_scan_results_locked(
             for relative, digest in retained_sources.items()
         ):
             raise ContractError("Stopped scan source digests could not be frozen.")
-        frozen_source_digests = retained_sources
         with connection:
             connection.execute(
                 "UPDATE scans SET retained_source_digests_json = ? "
@@ -1315,6 +1343,49 @@ def preserve_scan_results(db: Any, connection: Any, args: Any) -> dict[str, Any]
     return db.scan_context(connection, scan_id)
 
 
+def read_or_save_artifact(args: Any) -> dict[str, Any]:
+    """Read or publish supplemental bytes through verified filesystem handles."""
+    root = Path(args.artifact_root)
+    if args.command == "read-artifact":
+        descriptor = open_scan_local_file_descriptor(root, args.artifact_path, "Saved artifact")
+        with os.fdopen(descriptor, "rb") as source:
+            return {"content": base64.b64encode(source.read()).decode("ascii")}
+    write_scan_local_bytes(root, args.artifact_path, sys.stdin.buffer.read())
+    return {"path": str(root / args.artifact_path)}
+
+
+def save_scan_artifact(db: Any, connection: Any, args: Any) -> dict[str, Any]:
+    """Publish supplemental bytes under the same lock as finalization and recovery."""
+    scan_id = db.require_uuid(args.scan_id, "scan-id")
+    with db.scan_completion_lock(scan_id):
+        scan = db.require_scan(connection, scan_id)
+        db.handoff.require_current_continuation(
+            scan,
+            args.claim_token,
+            error_message="Scan artifacts are owned by another continuation.",
+        )
+        if scan["status"] != "running" or scan["seal_manifest_digest"] is not None:
+            raise SystemExit("The scan stopped; its artifacts cannot be modified.")
+        scan_dir = db.require_canonical_scan_directory(Path(scan["scan_dir"]))
+        manifest_path = db.artifact_path(scan_dir, "scan-manifest.json", required=False)
+        if manifest_path is not None:
+            manifest = db.read_json_object(manifest_path).get("scan", {})
+            if manifest.get("sealedAt") is not None or manifest.get("artifacts") is not None:
+                raise SystemExit("The scan is sealed; its artifacts cannot be modified.")
+        output = args.artifact_path
+        key = output.lower()
+        if not (
+            key.startswith(("artifacts/", "findings/", "hardening/"))
+            or key == "report_validation.md"
+        ) or any(
+            key == reserved or key.startswith(reserved + "/")
+            for reserved in _RESERVED_ARTIFACT_PATHS
+        ):
+            raise SystemExit("Use the typed scan tools for canonical artifacts and checkpoints.")
+        write_scan_local_bytes(scan_dir, output, sys.stdin.buffer.read())
+    return {"scanId": scan_id, "path": str(scan_dir / output)}
+
+
 def write_scan_draft(db: Any, connection: Any, args: Any) -> dict[str, Any]:
     scan_id = db.require_uuid(args.scan_id, "scan-id")
     with db.scan_completion_lock(scan_id):
@@ -1386,6 +1457,29 @@ def write_scan_draft(db: Any, connection: Any, args: Any) -> dict[str, Any]:
                 filename,
                 (json.dumps(document, allow_nan=False, indent=2) + "\n").encode(),
             )
+        # Accepted Standard drafts are evidence of review or report assembly,
+        # even when the parent omitted its explicit progress call.
+        if scan["mode"] == "standard":
+            phase = "discovery" if manifest["scan"].get("complete") is False else "reporting"
+            earlier = PHASES[: PHASES.index(phase)]
+            placeholders = ",".join("?" for _ in earlier)
+            timestamp = db.now()
+            try:
+                with connection:
+                    changed = connection.execute(
+                        "UPDATE scans SET phase = ?, updated_at = ? "
+                        f"WHERE id = ? AND status = 'running' AND phase IN ({placeholders})",
+                        (phase, timestamp, scan_id, *earlier),
+                    )
+                    if changed.rowcount:
+                        connection.execute(
+                            "UPDATE scan_progress SET phase_items_total = 0, "
+                            "phase_items_completed = 0, phase_progress_unit = NULL, updated_at = ? "
+                            "WHERE scan_id = ?",
+                            (timestamp, scan_id),
+                        )
+            except sqlite3.Error as exc:
+                print(f"Could not save scan progress: {exc}", file=sys.stderr)
     return {"scanId": scan_id, "status": "draft_written"}
 
 

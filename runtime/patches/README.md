@@ -38,6 +38,37 @@ grep -c 'codexSecurity\|"Codex Security"' scripts/finalize_scan_contract.py   # 
 grep -c 'cxsec' scripts/finalize_scan_contract.py                            # must be 5
 ```
 
+## Local additions
+
+Files this port carries that upstream has since deleted. They live under
+`assets/local-additions/` in the skill repo, mirrored by path, and the installer
+copies them into `$CXSEC_HOME` after vendoring (so a `--force` re-vendor, which
+wipes `scripts/`, never loses them).
+
+### scripts/resolve_security_md.py
+
+The offline SECURITY.md policy resolver. Upstream ported it to TypeScript inside
+the MCP app in 0.1.28 (invoked as `launch_codex_security_mcp --helper
+resolve-security-md`) and deleted the standalone Python helper. This port does
+**not** vendor the MCP app — it is the offline, stdlib-only half — so the Python
+resolver is kept as a local addition. Mode 7 (`mode-policy.md`), `mode-repo-scan.md`,
+`core-scan.md`, and `security-guidance.md` all invoke
+`$CXSEC_HOME/scripts/resolve_security_md.py` directly.
+
+It is self-contained stdlib (`argparse`, `json`, `os`, `stat`, `sys`, `pathlib` —
+no intra-plugin imports) and byte-identical across 0.1.24–0.1.26, its last upstream
+revisions. The upstream 0.1.32 `security-guidance.md` states the TS helper "retains
+the former Python helper's option abbreviations, help parsing, home expansion, and
+path resolution" with the same root-to-leaf concatenation semantics, so the carried
+helper matches current upstream behaviour.
+
+Verify:
+
+```bash
+test -f "$CXSEC_HOME/scripts/resolve_security_md.py" && \
+  python3 "$CXSEC_HOME/scripts/resolve_security_md.py" --help >/dev/null && echo ok
+```
+
 ## Deliberately NOT patched
 
 The canonical `documentType` literals (`codex-security.scan-manifest`,

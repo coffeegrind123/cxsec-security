@@ -11,8 +11,8 @@
 set -euo pipefail
 
 UPSTREAM_REPO="openai/codex-security"
-PINNED_VERSION="0.1.24"
-PINNED_SHA="d4b7d29a87cb86c9072f7905ba867d02385d8fd3"
+PINNED_VERSION="0.1.32"
+PINNED_SHA="7c19cce7224af29628cd10c218444d5c0e8fdd1c"
 SRC_SUBDIR="plugins/codex-security"
 VENDOR_DIRS=(scripts schemas references preflight examples)
 # Vendored with their upstream path intact: validate_patch_risk_assessment.py resolves
@@ -22,6 +22,10 @@ PATCH_NAME="0001-rebrand-sarif-output.patch"
 
 SKILL_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 LOCAL_SRC="$SKILL_DIR/runtime"
+# Files this port carries that upstream no longer ships. Restored into $CXSEC_HOME
+# after vendoring, with their path under this dir mirrored into the install. See
+# patches/README.md ("Local additions").
+LOCAL_ADD_DIR="$SKILL_DIR/assets/local-additions"
 CXSEC_HOME="${CXSEC_HOME:-$HOME/.claude/codex-security}"
 REF="$PINNED_SHA"
 MODE="auto"
@@ -456,6 +460,26 @@ apply_patch() {
   cp -a "$patch_file" "$CXSEC_HOME/patches/$PATCH_NAME"
 }
 
+# Restore files this port carries that upstream has since deleted. Each lands at its
+# path relative to $LOCAL_ADD_DIR, so a file at assets/local-additions/scripts/foo.py
+# installs as $CXSEC_HOME/scripts/foo.py. Runs after vendoring (which wipes scripts/)
+# so a --force re-vendor never loses them. Currently: resolve_security_md.py, the
+# offline SECURITY.md policy resolver upstream ported into the (unvendored) MCP app
+# in 0.1.28. See patches/README.md.
+restore_local_additions() {
+  [ -d "$LOCAL_ADD_DIR" ] || return 0
+  local added=0 rel dest f
+  while IFS= read -r -d '' f; do
+    rel="${f#"$LOCAL_ADD_DIR"/}"
+    dest="$CXSEC_HOME/$rel"
+    mkdir -p "$(dirname "$dest")"
+    cp -a "$f" "$dest"
+    ok "local addition: $rel"
+    added=$((added + 1))
+  done < <(find "$LOCAL_ADD_DIR" -type f -print0 2>/dev/null)
+  [ "$added" -gt 0 ] || true
+}
+
 write_provenance() {
   if [ "$SOURCE" = "local" ]; then
     if [ -f "$LOCAL_SRC/PROVENANCE.md" ]; then
@@ -502,9 +526,16 @@ The vendored code is **not** a pristine copy. See \`patches/README.md\`.
 - \`patches/$PATCH_NAME\` — renames the five cosmetic SARIF branding sites in
   \`scripts/finalize_scan_contract.py\` so generated SARIF is attributed to
   \`cxsec-security\`.
+- \`scripts/resolve_security_md.py\` — a carried-forward local addition. Upstream
+  ported the offline SECURITY.md policy resolver into the MCP app in 0.1.28
+  (\`launch_codex_security_mcp --helper resolve-security-md\`) and deleted the
+  standalone helper. This port does not vendor the MCP app, so it keeps the last
+  upstream Python version (byte-identical 0.1.24–0.1.26), which mode 7 and the
+  repo-scan policy chain invoke. Self-contained stdlib; same concatenation
+  semantics the TS helper documents.
 
-Re-vendoring overwrites this. \`install.sh\` re-applies the patch automatically and
-verifies the result.
+Re-vendoring overwrites both. \`install.sh\` re-applies the patch and restores the
+local additions automatically, then verifies the result.
 
 Canonical wire literals (\`codex-security.*\` documentTypes, the
 \`codex-security/v1\` fingerprint algorithm, the \`codex-security-snapshot/v1\`
@@ -553,6 +584,7 @@ do_install() {
   ok "vendored ${VENDOR_DIRS[*]} ${VENDOR_SKILL_DIRS[*]}"
 
   apply_patch
+  restore_local_additions
   write_provenance
 }
 
