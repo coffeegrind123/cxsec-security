@@ -1,9 +1,9 @@
 ---
 name: cxsec-security
-description: Application security review toolkit — scan a repository, PR, commit, branch diff, or working-tree patch for vulnerabilities; run a deep multi-pass scan; triage findings you already have from SARIF/CVEs/advisories/scanner tickets; fix and verify a finding; assess how risky a patch is to merge; write a disclosure report; author or review a repository SECURITY.md; file findings as Linear/Jira/GitHub issues or a GitHub security advisory; or propose structural security hardening. Use for security audits, vulnerability hunting, appsec review, threat modeling, attack-path and severity analysis, exploitability triage, security regression review of a change set, and CWE/CVSS-grounded reporting with SARIF output. Triggered by requests like 'audit this repo for vulnerabilities', 'security review this PR', 'run a deep scan', 'is this CVE exploitable here', 'triage this SARIF', 'fix and verify this finding', 'is this patch safe to merge', 'write this up for disclosure', 'draft a SECURITY.md', 'file these findings in Linear'.
+description: Application security review toolkit — scan a repository, PR, commit, branch diff, or working-tree patch for vulnerabilities; run a deep multi-pass scan; triage findings you already have from SARIF/CVEs/advisories/scanner tickets; fix and verify a finding; assess how risky a patch is to merge; write a disclosure report; author or review a SECURITY.md; file findings as Linear/Jira/GitHub issues or a GitHub security advisory; or propose structural security hardening. Use for security audits, vulnerability hunting, appsec review, threat modeling, attack-path and severity analysis, exploitability triage, security regression review of a change set, and CWE/CVSS-grounded reporting with SARIF output. Triggered by requests like 'audit this repo for vulnerabilities', 'security review this PR', 'run a deep scan', 'is this CVE exploitable here', 'triage this SARIF', 'fix and verify this finding', 'is this patch safe to merge', 'write this up for disclosure', 'draft a SECURITY.md', 'file these findings in Linear'.
 license: Apache-2.0
 compatibility: Requires python3 3.11+ and the vendored codex-security runtime at $CXSEC_HOME (default ~/.claude/codex-security), with scripts/ and schemas/ as siblings. Run scripts/install.sh to install or verify it. Modes 4 and 8 also need gh or a connected GitHub/Linear/Atlassian MCP server. Scanning makes no network calls.
-allowed-tools: Bash(bash ~/.claude/skills/cxsec-security/scripts/install.sh:*) Bash(~/.claude/skills/cxsec-security/scripts/install.sh:*) Read Write Edit Glob Grep Task Agent AskUserQuestion TodoWrite WebFetch mcp__linear__* mcp__atlassian__* Bash(python3:*) Bash(python:*) Bash(git:*) Bash(gh:*) Bash(rg:*) Bash(grep:*) Bash(find:*) Bash(ls:*) Bash(cat:*) Bash(head:*) Bash(tail:*) Bash(wc:*) Bash(jq:*) Bash(sed:*) Bash(awk:*) Bash(sort:*) Bash(uniq:*) Bash(diff:*) Bash(file:*) Bash(mkdir:*) Bash(cp:*) Bash(mv:*) Bash(sha256sum:*) Bash(date:*) Bash(npm:*) Bash(pnpm:*) Bash(yarn:*) Bash(node:*) Bash(pytest:*) Bash(cargo:*) Bash(go:*) Bash(make:*)
+allowed-tools: Bash(~/.claude/skills/cxsec-security/scripts/install.sh:*) Read Write Edit Glob Grep Task Agent AskUserQuestion TodoWrite WebFetch mcp__linear__* mcp__atlassian__* Bash(python3:*) Bash(python:*) Bash(git:*) Bash(gh:*) Bash(rg:*) Bash(grep:*) Bash(find:*) Bash(ls:*) Bash(cat:*) Bash(head:*) Bash(tail:*) Bash(wc:*) Bash(jq:*) Bash(sed:*) Bash(awk:*) Bash(sort:*) Bash(uniq:*) Bash(diff:*) Bash(file:*) Bash(mkdir:*) Bash(cp:*) Bash(sha256sum:*) Bash(date:*) Bash(npm:*) Bash(pnpm:*) Bash(yarn:*) Bash(node:*) Bash(pytest:*) Bash(cargo:*) Bash(go:*) Bash(make:*)
 ---
 
 # Security Review Toolkit
@@ -81,8 +81,8 @@ the finalizer resolves schemas as `<script_parent>/../schemas`.
 schema-resolution error, install or repair it before continuing:**
 
 ```bash
-bash ~/.claude/skills/cxsec-security/scripts/install.sh          # install, or verify if present
-bash ~/.claude/skills/cxsec-security/scripts/install.sh --check  # verify only, no network, no writes
+~/.claude/skills/cxsec-security/scripts/install.sh          # install, or verify if present
+~/.claude/skills/cxsec-security/scripts/install.sh --check  # verify only, no network, no writes
 ```
 
 It vendors the pinned upstream runtime, applies the SARIF-attribution patch, and
@@ -106,6 +106,19 @@ yourself fails validation.
 
 Read `references/sarif-adapter.md` only when asked what the generated SARIF
 contains or how findings map into it — never to produce SARIF by hand.
+
+## Gotchas
+
+- Moving `scripts/` or `schemas/` apart breaks finalization with a schema-resolution
+  error, not an obvious layout error.
+- Upstream docs invoke `launch_codex_security_mcp --helper <name>`; that launcher
+  is not vendored. Use the carried `$CXSEC_HOME/scripts/<name>.py` the mode file
+  names instead.
+- Coverage has no `completeness` field; the finalizer silently drops one. Remaining
+  work lives only in `coverage.deferred` and `needs_follow_up` surfaces.
+- Finalization regenerates `report.md`, SARIF, and (when `scan.threatModel` is
+  set) `<scan_dir>/threatmodel.md`; hand edits are lost and never feed back into
+  the canonical JSON.
 
 ## Standing rules for every mode
 
