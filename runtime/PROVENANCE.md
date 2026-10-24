@@ -1,14 +1,13 @@
 # codex-security runtime (vendored)
 
 Vendored from [openai/codex-security](https://github.com/openai/codex-security),
-plugin version `0.1.32`, commit `7c19cce`.
-Full commit: `7c19cce7224af29628cd10c218444d5c0e8fdd1c`
+plugin version `0.6.0`, commit `13dcc6f`.
+Full commit: `13dcc6fec00aaf4c23a6fa7e375ccc1726b22836`
 Licensed Apache-2.0 (see LICENSE).
 
-Source path: `plugins/codex-security/{scripts,schemas,references,preflight,examples}`
-plus `plugins/codex-security/skills/assess-patch-risk/scripts`, kept at its upstream depth.
+Source path: `plugins/codex-security/{scripts,schemas,references,examples,shared}`.
 
-Installed by `cxsec-security/scripts/install.sh` on 2026-10-03T10:33:38Z.
+Installed by `cxsec-security/scripts/install.sh` on 2026-10-24T15:40:11Z.
 
 This is the offline, model-agnostic half of the upstream plugin: stdlib-only Python
 that validates scan-contract artifacts and deterministically generates `report.md`
@@ -24,7 +23,7 @@ Layout is load-bearing: `finalize_scan_contract.py` resolves schemas as
 
 The vendored code is **not** a pristine copy. See `patches/README.md`.
 
-- `patches/0001-rebrand-sarif-output.patch` — renames the five cosmetic SARIF branding sites in
+- `patches/0001-rebrand-sarif-output.patch` — renames the four cosmetic SARIF branding sites in
   `scripts/finalize_scan_contract.py` so generated SARIF is attributed to
   `cxsec-security`.
 - `scripts/resolve_security_md.py` — a carried-forward local addition. Upstream
@@ -34,8 +33,25 @@ The vendored code is **not** a pristine copy. See `patches/README.md`.
   upstream Python version (byte-identical 0.1.24–0.1.26), which mode 7 and the
   repo-scan policy chain invoke. Self-contained stdlib; same concatenation
   semantics the TS helper documents.
+- `scripts/normalize_candidates.py` — a carried-forward local addition. Upstream
+  ported diff-scan candidate normalization into the MCP app in 0.2.0 and deleted
+  the Python helper. Kept at its last upstream version with the later TypeScript
+  behaviour changes ported back (raw POSIX path bytes, final-row and ambiguous
+  carriage-return handling). Output and `candidate_id` values are unchanged.
+- `skills/assess-patch-risk/scripts/validate_patch_risk_assessment.py` — a
+  carried-forward local addition, kept at its upstream depth (it resolves the
+  plugin root as `parents[3]`). Upstream ported it into the MCP app in 0.3.0;
+  the carried copy includes the later rule rejecting `merge` with critical
+  regression likelihood.
+- `scripts/copy_deep_review_input.py`, `scripts/bind_repo_scopes.py` — carried-forward
+  local additions. Upstream retired these `generate_rank_input.py` subcommands
+  (`copy-deep-review-input`, `bind-repo-scopes`) into the MCP launcher in 0.3.0.
+  Re-implemented from the TypeScript helpers; same CLI and output format.
 
-Re-vendoring overwrites both. `install.sh` re-applies the patch and restores the
+All carried helpers are held to upstream's current TypeScript test suites, ported to
+pytest under the skill repo's `tests/`.
+
+Re-vendoring overwrites the patch and removes the additions. `install.sh` re-applies the patch and restores the
 local additions automatically, then verifies the result.
 
 Canonical wire literals (`codex-security.*` documentTypes, the

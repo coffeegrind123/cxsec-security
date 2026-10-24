@@ -32,12 +32,12 @@ Into `$CXSEC_HOME` (default `~/.claude/codex-security`), from
 
 | Directory | Contents |
 |---|---|
-| `scripts/` | 40 stdlib-only Python helpers from upstream (the `workbench/` subpackage included), plus the carried `resolve_security_md.py` (a local addition — see `patches/README.md`). No pip install, no network calls. |
-| `schemas/` | 13 JSON Schemas for the scan contract and patch-risk assessment. |
+| `scripts/` | Upstream's stdlib-only Python helpers (the `workbench/` subpackage included) plus two `.mjs` modules the port never runs, then the carried local additions `resolve_security_md.py`, `normalize_candidates.py`, `copy_deep_review_input.py`, and `bind_repo_scopes.py` (see `patches/README.md`). No pip install, no network calls. |
+| `schemas/` | 12 JSON Schemas for the scan contract and patch-risk assessment. |
 | `references/` | Upstream shared reference set. |
-| `preflight/` | `capability-profiles.toml` — capability gate definitions. |
 | `examples/` | `completed-scan/` — the fixture the smoke test finalizes. |
-| `skills/assess-patch-risk/scripts/` | Mode 10's assessment validator, kept at its upstream depth. |
+| `shared/` | Workbench migration tables. `workbench_schema.py` reads them as `<script_parent>/../shared`, so `shared/` must sit beside `scripts/`. |
+| `skills/assess-patch-risk/scripts/` | Mode 10's assessment validator — a carried local addition (upstream moved it into its launcher in 0.3.0), kept at its upstream depth. |
 
 Plus `LICENSE` (Apache-2.0), a generated `PROVENANCE.md`, and `patches/` holding
 the applied patch.
@@ -54,12 +54,11 @@ breaks its schema lookup.
 
 | Check | Proves |
 |---|---|
-| `python 3.x` | An interpreter 3.11+ exists. The runtime is stdlib-only, but `config_preflight.py` and `deep_scan_config.py` import `tomllib`, which is stdlib only from 3.11; 3.9/3.10 work only with `tomli` installed. |
+| `python 3.x` | An interpreter 3.11+ exists. The runtime is stdlib-only, but `deep_scan_config.py` and `workbench/runtime_toml.py` import `tomllib`, which is stdlib only from 3.11; 3.9/3.10 work only with `tomli` installed. |
 | `scripts/ and schemas/ are siblings` | The load-bearing layout constraint holds. |
 | `<script>.py runs` | Each load-bearing helper parses and starts under this interpreter. |
-| `SARIF rebrand patch applied` | 0 upstream branding sites, 5 `cxsec` sites in the finalizer. |
+| `SARIF rebrand patch applied` | 0 upstream branding sites, 4 `cxsec` sites in the finalizer (upstream dropped the fifth, the coverage-completeness run property, in 0.3.0). |
 | `patch-risk validator present at its load-bearing depth` | Mode 10 can find its schema. |
-| `capability preflight emits parseable JSON` | `config_preflight.py` can read its profile registry. |
 | `end-to-end` | The bundled example scan, stripped back to an unsealed draft, finalizes into a sealed manifest, `report.md`, and SARIF 2.1.0 attributed to `cxsec-security`. |
 | `sealed bundle re-validates` | `validate_scan_contract.py` re-reads the whole sealed bundle — manifest, findings, coverage and the generated report — and reports `status: valid`. |
 | `patch-risk validator resolves its schema and rejects an invalid assessment` | Mode 10's validator loads the finalizer by path and its schema by depth, and actually enforces the contract. |
@@ -85,7 +84,10 @@ identity derivation, sealing, report generation, and SARIF export in one pass.
 - **`examples/completed-scan absent`** — an install predating the fixture. The
   end-to-end check is skipped, not failed; `--force` vendors it.
 - **`skills/assess-patch-risk/scripts/ absent`** — an install predating mode 10.
-  Warned, not failed; `--force` vendors it.
+  Warned, not failed; `--force` restores it from `assets/local-additions/`.
+- **`shared/ absent`** — an install from before the port vendored it. Warned,
+  not failed, but any workbench helper that imports `workbench_schema.py` fails
+  until `--force` vendors it.
 - **`<SRC_SUBDIR> not present at this ref`** — upstream moved the plugin again.
   The installer searches the tarball for `scripts/finalize_scan_contract.py` and
   reports the path it found; update `SRC_SUBDIR` in `install.sh` to match.
@@ -122,7 +124,9 @@ configure them in your MCP settings and re-check tool presence in-session.
 
 ## Deliberately not vendored
 
-The upstream MCP server (`mcp-app/`), the Codex-CLI-driven `deep-security-scan`
-coordinator, the upstream test suite, and `plugin-files.json`.
+The upstream MCP server (`mcp-app/`), the native helper sources (`native/`), the
+Codex-CLI-driven `deep-security-scan` coordinator, the upstream test suite, and
+`plugin-files.json`. Upstream retired `preflight/` and `config_preflight.py` in
+0.5.0; there is nothing to vendor for them.
 `workbench-file-protocol.md` is the file-based replacement for every upstream MCP
 tool.

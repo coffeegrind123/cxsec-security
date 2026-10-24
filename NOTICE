@@ -5,8 +5,8 @@ This product includes software and documentation derived from
 codex-security (https://github.com/openai/codex-security),
 Copyright OpenAI, licensed under the Apache License, Version 2.0.
 
-Derived from upstream plugin version 0.1.24, commit
-d4b7d29a87cb86c9072f7905ba867d02385d8fd3, source path plugins/codex-security.
+Derived from upstream release npm-v0.6.0, commit
+13dcc6fec00aaf4c23a6fa7e375ccc1726b22836, source path plugins/codex-security.
 (Upstream relocated the plugin from sdk/typescript/_bundled_plugin at 0.1.16+.)
 
 Modifications made to the upstream work
@@ -42,20 +42,30 @@ Documentation and skill definitions (SKILL.md, references/):
     replaced skills/threat-model/references/threat-model-guidance.md.
   * references/mode-patch-risk.md and references/risk-rubric.md are upstream
     skills/assess-patch-risk, added in 0.1.16+.
+  * references/scan-runtime.md is upstream references/scan-runtime.md, adapted to
+    Claude Code delegation, with its ChatGPT access advisory removed. It replaces
+    the capability preflight upstream retired in 0.5.0.
+  * references/mode-fix.md also carries upstream skills/verify-fix as its
+    Verify-Only section.
 
 Runtime layout (runtime/):
 
-  * skills/assess-patch-risk/scripts/validate_patch_risk_assessment.py is
-    vendored at its upstream depth rather than flattened into scripts/, because
-    it resolves the plugin root as parents[3].
+  * skills/assess-patch-risk/scripts/validate_patch_risk_assessment.py is kept
+    at its upstream depth rather than flattened into scripts/, because it
+    resolves the plugin root as parents[3].
 
 Runtime code (runtime/):
 
-  * assets/0001-rebrand-sarif-output.patch renames five cosmetic SARIF branding
+  * assets/0001-rebrand-sarif-output.patch renames four cosmetic SARIF branding
     sites in scripts/finalize_scan_contract.py: tool.driver.name, the
-    partialFingerprints namespace, and three run.properties keys. Generated SARIF
+    partialFingerprints namespace, and two run.properties keys. Generated SARIF
     is attributed to cxsec-security.
-  * No other functional change. Canonical wire literals (codex-security.*
+  * Carried Python helpers (assets/local-additions/, installed into the runtime):
+    resolve_security_md.py, normalize_candidates.py and the patch-risk validator
+    are upstream Python that upstream later deleted; copy_deep_review_input.py and
+    bind_repo_scopes.py re-implement retired generate_rank_input.py subcommands.
+    All five were modified to follow upstream's later TypeScript implementations.
+  * No other functional change to vendored code. Canonical wire literals (codex-security.*
     documentTypes, the codex-security/v1 fingerprint algorithm, and the
     codex-security-snapshot/v1 digest prefix) are deliberately unchanged so that
     genuine upstream artifacts remain ingestible.
@@ -63,15 +73,20 @@ Runtime code (runtime/):
 Not included from upstream
 --------------------------
 
-  * mcp-app/ (the MCP server and its TypeScript sources and tests)
+  * mcp-app/ (the MCP server and its TypeScript sources and tests), native/
   * the Codex-CLI-driven deep-security-scan coordinator
   * agents/openai.yaml
-  * references/desktop-scan.md, references/desktop-config-preflight.md, and the
-    hosted TAC access advisory (Codex desktop app and hosted connector only)
-  * tests/, skills/triage-finding/evals/, plugin-files.json, pyproject.toml
+  * references/desktop-scan.md, references/standalone-validation.md, and the
+    ChatGPT access advisory (Codex desktop app, MCP server, and hosted account
+    only)
+  * skills/publish-findings and skills/cloud-findings (codex-security CLI and
+    Codex Security Cloud only)
+  * tests/, plugin-files.json, pyproject.toml, requirements-test.txt
 
 Additions original to this work
 -------------------------------
 
   * scripts/install.sh, assets/, references/install.md,
     references/workbench-file-protocol.md, README.md, and this NOTICE.
+  * tests/: pytest ports of upstream's TypeScript test suites for the carried
+    helpers (sdk/typescript/tests-ts and plugins/codex-security/mcp-app/tests).

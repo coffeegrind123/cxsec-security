@@ -35,7 +35,7 @@ Treat the reduction-to-tail handoff as a hard boundary:
 4. Only then finalize.
 5. Read the generated `report.md`.
 6. Return a final answer only after finalization succeeds and `report.md` exists.
-   Explicitly label partial coverage.
+   Describe scope limitations and remaining work.
 
 **Do not jump from the round manifest directly to finalization.** The round
 manifest names round evidence; it is not the outer `scan-manifest.json` and never
@@ -60,11 +60,10 @@ keeps the immutable context captured when it began. Never repeat completed work.
    `scope: "."`; never silently widen it to the repository root.
 2. Create `<scan_dir>` per `scan-artifacts.md`, write `scan-context.json` with
    `mode: "deep"`.
-3. **Run no capability preflight.** A deep scan has no parent capability
-   requirements: do not read `config-preflight.md`, run the helper, request
-   remediation, or publish preflight checks. You validate the scan's own
-   ownership, target, scope, and read-only sandbox instead, and manage rounds
-   independently of any parent worker allowance.
+3. **Run no capability preflight.** None exists (upstream retired it in
+   0.5.0), and a deep scan does not read `scan-runtime.md` either. You validate
+   the scan's own ownership, target, scope, and read-only sandbox instead, and
+   manage rounds independently of any parent worker allowance.
 4. Confirm these reference files are present before starting: `core-scan.md`,
    `threat-model.md`, `final-report.md`, `finding-detail-fields.md`.
 5. Resolve the authorized source inventory once, and give the same one to every
@@ -113,7 +112,7 @@ For round `k`, dispatch one `Agent` (up to `workers` concurrently) with:
 - the shared `in_scope_files.txt` as its authorized source inventory
 - its own output directory `<discovery_dir>/rounds/round-<k>/`, writing its
   complete semantic result — `threatModel`, `findings`, `coverage`, and
-  `fully_reviewed_files` — to `result.json` there
+  `reviewed_files` — to `result.json` there
 - the explicit URL rule above
 - its `subagents` budget
 
@@ -141,9 +140,9 @@ Do not publish per-round progress unless the user asks. Do not expose worker
 counts, round passes, recurrence, cluster IDs, queue bookkeeping, or novelty
 metrics unless asked.
 
-If the time limit elapses before any round completed its source review, report
-the existing coverage as partial and never claim the repository is free of
-vulnerabilities.
+If the time limit elapses before any round completed its source review, explain
+that no source review finished and retain any saved findings or pending work; do
+not claim the repository is free of vulnerabilities.
 
 ## Terminal Round Manifest
 
@@ -177,9 +176,10 @@ After accepting the terminal manifest, continue in the same turn.
    merge distinct security failures because they share a CWE, and never drop a
    finding that only one round found — a single-round finding is not a weaker
    finding.
-4. Union the rounds' `fully_reviewed_files`, intersect with the shared in-scope
-   inventory, and derive coverage from that. Preserve every round's deferred
-   items, rejections with their counterevidence, and open questions.
+4. Derive coverage from the rounds' reviewed surfaces and `reviewed_files`,
+   keeping each round's surfaces and deferred items distinguishable. Preserve
+   every round's deferred items, rejections with their counterevidence, and open
+   questions; findings reduction does not clear pending review work.
 
 **Do not treat recurrence as reportability proof.** A finding that appeared in
 every round is still only as good as its source evidence; a finding that appeared
@@ -193,8 +193,12 @@ once and carries a complete proof tuple is reportable.
      known CWEs in `taxonomy.cwe`, actual `provenance.source`, genuine nonempty
      code evidence, and coverage surfaces with canonical `label` and
      `disposition`. Preserve round provenance and any candidate identity.
-   - Set coverage to `partial` when deferred work or a `needs_follow_up` surface
-     remains; retain the actual evidence and reason.
+   - Retain the configured paths and the notes from accepted rounds. Keep each
+     round's surfaces and deferred items distinguishable, with receipt references
+     pointing to the original evidence. Findings reduction does not clear pending
+     review work. There is no coverage `completeness` field; remaining work is
+     carried by `deferred` and `needs_follow_up` surfaces with their evidence and
+     reason.
    - Omit `scan.sealedAt`, `scan.artifacts`, and per-finding identities — the
      finalizer derives them.
    - Write-ups (`mode-writeup.md`) and hardening (`mode-harden.md`) are optional;
@@ -208,7 +212,7 @@ once and carries a complete proof tuple is reportable.
 
    If validation rejects a named semantic field, correct that exact field and
    retry at most twice. Stop after the first success.
-3. Report the generated `report.md` path and label partial coverage explicitly.
+3. Report the generated `report.md` path, scope limitations, and remaining work.
    Token usage is not measured here; say so rather than reporting zero.
 
 Keep the phase record monotonic in `progress.jsonl`: canonical threat-model
@@ -234,7 +238,7 @@ synthesis happens after the rounds, so do not move the phase backward.
   partial artifacts exist. `<scan_dir>` is durable; a later turn can resume from
   `rounds.jsonl`.
 - On explicit cancellation, stop and leave `<scan_dir>` intact; retained round
-  results are reported with incomplete coverage, and late round artifacts are not
+  results are reported with their remaining work, and late round artifacts are not
   accepted afterwards.
 
 ## Hard Rules

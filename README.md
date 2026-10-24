@@ -36,7 +36,7 @@ offline install. Read [`references/install.md`](references/install.md) when a
 check fails or you need to re-vendor or pin a different upstream ref.
 
 **Requirements:** `python3` 3.11+ (3.9/3.10 work only with `tomli` installed —
-the capability preflight reads TOML). Nothing else for scanning — the runtime is
+the deep-scan config reads TOML). Nothing else for scanning — the runtime is
 stdlib-only and makes no network calls. Filing findings (mode 8) and GitHub
 finding intake (mode 4) additionally need authenticated `gh`, or a connected MCP
 server exposing GitHub, Linear, or Atlassian/Jira tools.
@@ -52,7 +52,7 @@ and follows it.
 | 2 | Diff scan | Review a change set: PR, commit, branch diff, working-tree patch. |
 | 3 | Deep scan | Explicitly asked for deep, exhaustive, or multi-pass. |
 | 4 | Triage | You already have findings — SARIF, CVE/GHSA, scanner tickets — and want repo-impact verdicts. |
-| 5 | Fix | Fix *and verify* one identified finding. |
+| 5 | Fix | Fix *and verify* one identified finding, or verify an existing fix only. |
 | 6 | Write-up | Turn findings and PoCs into a distributable disclosure report. |
 | 7 | Policy | Author or review a repository `SECURITY.md`. |
 | 8 | Track | File findings as Linear/Jira/GitHub issues or a draft GitHub advisory. |
@@ -84,14 +84,15 @@ resolves schemas as `<script_parent>/../schemas`.
 
 ```
 SKILL.md                  router: mode selection, standing rules, reference map
-references/               39 files, loaded on demand
+references/               40 files, loaded on demand
   mode-*.md               the ten modes
   core-scan.md            the audit engine for modes 1 and 3
   phase-*.md              the four phases of the diff scan
   workbench-file-protocol.md   file-based replacement for every upstream MCP tool
   install.md              installer reference and failure playbook
 scripts/install.sh        install / verify / re-vendor the runtime
-assets/                   the SARIF-attribution patch
+assets/                   the SARIF-attribution patch and carried local additions
+tests/                    pytest ports of upstream's suites for the carried helpers
 runtime/                  vendored upstream runtime (stdlib Python + JSON Schemas)
 ```
 
@@ -100,9 +101,12 @@ runtime/                  vendored upstream runtime (stdlib Python + JSON Schema
 The upstream MCP server (`mcp-app/`) and the Codex-CLI-driven
 `deep-security-scan` coordinator. `references/workbench-file-protocol.md` is the
 authoritative mapping from every upstream MCP tool to its file-based replacement,
-and it is required reading before any scan mode. The Codex-desktop-only references
-(`desktop-scan.md`, `desktop-config-preflight.md`) and the hosted TAC access
-advisory have no equivalent here and are not ported.
+and it is required reading before any scan mode. The Codex-desktop-only
+`desktop-scan.md`, the ChatGPT access advisory, and the `publish-findings` and
+`cloud-findings` skills (which need the `codex-security` CLI or Codex Security
+Cloud) have no equivalent here and are not ported. Helpers upstream moved into its
+TypeScript launcher are carried as Python under `assets/local-additions/`, held to
+upstream's current test suites by `tests/` (`python3 -m pytest tests/`).
 
 ## License
 

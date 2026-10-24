@@ -27,9 +27,10 @@ Resolve `<python_command>` to the configured Python interpreter (`"$PYTHON"` whe
 
 - Resolved SECURITY.md guidance: `<context_dir>/security_guidance.md`
 - Repository-scoped threat model: `<security_scans_dir>/threat_model.md`
-- Per-scan threat model copy: `<context_dir>/threat_model.md`
-- Later scan phases should treat `<context_dir>/threat_model.md` as the source of truth.
-- When a repository-scoped threat model already exists, copy it to `<context_dir>/threat_model.md` without alteration for auditability.
+- Canonical per-scan model: `scan.threatModel` in `<scan_dir>/scan-manifest.json`, retained in `<scan_dir>/checkpoint-findings.json` as soon as architecture mapping produces it. Later phases use this retained canonical content.
+- Human-readable per-scan model: `<scan_dir>/threatmodel.md`. `finalize_scan_contract.py` regenerates it from the canonical model at finalization; before then you may write the same text there as the working projection. It is never an independently authored input.
+- When a repository-scoped threat model already exists, retain its exact text as the canonical model (`{ "format": "markdown", "content": "<text>", "origin": "provided" }` for supplied text) without alteration for auditability.
+- Historical scans may retain `<context_dir>/threat_model.md`; read it only when the canonical model is absent, without renaming or rewriting the historical file. For sealed scans, the historical document must be a recorded artifact with a matching digest.
 
 End each repository-scoped threat model with these two lines:
 
@@ -77,7 +78,6 @@ The worklist, per-finding receipt, and phase-report paths below apply to diff wo
 
 - Repository-wide coverage ledger: `<coverage_dir>/repository_coverage_ledger.md`
   - This is a coverage artifact, not a findings list: it should include checked surfaces with not_applicable, suppressed, deferred, or reportable dispositions.
-- Reviewed surfaces summary: `<coverage_dir>/reviewed_surfaces.md` if applicable
 
 ## Validation (Phase 3) Paths
 

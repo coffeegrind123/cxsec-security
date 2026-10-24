@@ -4,7 +4,9 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import re
 import sys
+import unicodedata
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -28,9 +30,24 @@ SCAN_CONTRACT = load_scan_contract_validator()
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Validate a patch-risk assessment.")
+    parser = argparse.ArgumentParser(
+        description="Validate a patch-risk assessment.", allow_abbrev=False
+    )
     parser.add_argument("assessment", help="Assessment JSON path, or - for stdin.")
     return parser.parse_args()
+
+
+def escape_controls(text: str) -> str:
+    return "".join(
+        (f"\\u{{{ord(char):x}}}" if ord(char) > 0xFFFF else f"\\u{ord(char):04x}")
+        if unicodedata.category(char) in {"Cc", "Cf"}
+        else char
+        for char in text
+    )
+
+
+def reject_non_finite(token: str) -> None:
+    raise ValueError(f"non-finite JSON number {token} is not supported")
 
 
 def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -42,22 +59,60 @@ def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return value
 
 
+def read_error(error: Exception) -> str:
+    if isinstance(error, OSError) and error.filename is not None:
+        return f"[Errno {error.errno}] {error.strerror}: '{error.filename}'"
+    if isinstance(error, json.JSONDecodeError) and error.pos < len(error.doc):
+        return f"{error}, found '{error.doc[error.pos]}'"
+    return str(error)
+
+
 def read_object(path: str) -> dict[str, Any]:
     try:
-        text = sys.stdin.read() if path == "-" else Path(path).read_text(encoding="utf-8")
-        value = json.loads(text, object_pairs_hook=reject_duplicate_keys)
-    except (OSError, json.JSONDecodeError) as error:
-        raise ValueError(f"cannot read assessment: {error}") from error
+        if path == "-":
+            # Keep undecodable stdin bytes distinct from U+FFFD.
+            text = sys.stdin.buffer.read().decode("utf-8", "surrogateescape")
+        else:
+            text = Path(path).read_text(encoding="utf-8")
+        value = json.loads(
+            text, object_pairs_hook=reject_duplicate_keys, parse_constant=reject_non_finite
+        )
+    except (OSError, ValueError, RecursionError) as error:
+        raise ValueError(f"cannot read assessment: {escape_controls(read_error(error))}") from error
     if not isinstance(value, dict):
         raise ValueError("assessment must be a JSON object")
     return value
 
 
+def ecmascript_patterns(node: Any) -> Any:
+    # ECMAScript "$" never matches before a trailing newline; Python's does.
+    if isinstance(node, list):
+        return [ecmascript_patterns(item) for item in node]
+    if not isinstance(node, dict):
+        return node
+    return {
+        key: re.sub(r"(?<!\\)\$$", r"\\Z", item)
+        if key == "pattern" and isinstance(item, str)
+        else ecmascript_patterns(item)
+        for key, item in node.items()
+    }
+
+
+def pointer_context(message: str) -> str:
+    context, separator, detail = message.partition(": ")
+    stem = SCHEMA_PATH.stem
+    if not separator or not context.startswith(stem):
+        return message
+    path = re.sub(r"\[(\d+)\]", r"/\1", context[len(stem) :]).replace(".", "/")
+    return f"{stem}{path}: {detail}"
+
+
 def schema_errors(value: dict[str, Any]) -> list[str]:
     try:
-        SCAN_CONTRACT.validate_against_schema(value, SCHEMA_PATH)
+        schema = ecmascript_patterns(json.loads(SCHEMA_PATH.read_text(encoding="utf-8")))
+        SCAN_CONTRACT._validate_schema_node(value, schema, SCHEMA_PATH.stem, schema)
     except (OSError, ValueError, RecursionError) as error:
-        return [str(error)]
+        return [escape_controls(pointer_context(str(error)))]
     return []
 
 
@@ -88,6 +143,8 @@ def semantic_errors(value: dict[str, Any]) -> list[str]:
             errors.append("merge cannot retain a failed validation")
         if evidence_plan:
             errors.append("merge cannot retain an evidence plan")
+        if value["regressionLikelihood"]["rating"] == "critical":
+            errors.append("merge cannot retain critical regression likelihood")
     elif workflow_label != recommendation:
         errors.append("non-merge workflow label must match the recommendation")
 

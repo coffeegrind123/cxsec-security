@@ -112,5 +112,6 @@ Render attack-path facts using `attack-path-facts.md`.
 - Outside compact diff mode, save a final visible report for each candidate finding using that finding's attack-path analysis report path from `scan-artifacts.md`. Compact diff scans use the ledger receipt instead.
 
 -- Considerations for attack path --
+
 - A bug matters if evidence shows an attacker could exploit it.
 - The attack surface should generally be one that is plausibly exposed to end users / external actors (or another actor explicitly in scope in the threat model).

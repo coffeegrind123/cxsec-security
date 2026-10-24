@@ -10,5 +10,7 @@ scan-context.json
 candidates.jsonl
 report.md
 exports/
+# ...except the vendored upstream example, which the installer ships
+!runtime/examples/**/report.md
 
 .DS_Store

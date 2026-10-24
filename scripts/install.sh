@@ -11,14 +11,14 @@
 set -euo pipefail
 
 UPSTREAM_REPO="openai/codex-security"
-PINNED_VERSION="0.1.32"
-PINNED_SHA="7c19cce7224af29628cd10c218444d5c0e8fdd1c"
+PINNED_VERSION="0.6.0"
+PINNED_SHA="13dcc6fec00aaf4c23a6fa7e375ccc1726b22836"
 SRC_SUBDIR="plugins/codex-security"
-VENDOR_DIRS=(scripts schemas references preflight examples)
-# Vendored with their upstream path intact: validate_patch_risk_assessment.py resolves
-# the plugin root as parents[3], so flattening it into scripts/ breaks its schema lookup.
-VENDOR_SKILL_DIRS=(skills/assess-patch-risk/scripts)
+# shared/ must sit beside scripts/: workbench_schema.py reads ../shared/*.json at import.
+VENDOR_DIRS=(scripts schemas references examples shared)
 PATCH_NAME="0001-rebrand-sarif-output.patch"
+# Sites the rebrand patch renames in finalize_scan_contract.py.
+PATCH_SITES=4
 
 SKILL_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 LOCAL_SRC="$SKILL_DIR/runtime"
@@ -62,7 +62,8 @@ Usage: install.sh [options]
   -h, --help          This text.
 
 Installs $UPSTREAM_REPO@${PINNED_VERSION} ($SRC_SUBDIR) into \$CXSEC_HOME:
-${VENDOR_DIRS[*]} ${VENDOR_SKILL_DIRS[*]} plus LICENSE, then applies $PATCH_NAME.
+${VENDOR_DIRS[*]} plus LICENSE, then applies $PATCH_NAME and restores the
+local additions (helpers upstream moved into its unvendored MCP app).
 
 Source: upstream by default, falling back to the bundled runtime/ tree when the
 download fails. --local skips the network entirely. The runtime itself never makes
@@ -119,7 +120,7 @@ check_python() {
     ok "python $v"
   elif "$PY" -c 'import sys;raise SystemExit(0 if sys.version_info>=(3,9) else 1)' 2>/dev/null; then
     if "$PY" -c 'import tomli' 2>/dev/null; then
-      warn "python $v — below the 3.11 floor, but tomli is installed so the preflight can still read TOML"
+      warn "python $v — below the 3.11 floor, but tomli is installed so the deep-scan config can still read TOML"
     else
       bad "python $v is too old — need 3.11+ for stdlib tomllib, or 3.9+ with tomli installed"
     fi
@@ -143,7 +144,7 @@ check_layout() {
   else
     bad "scripts/ and schemas/ are not siblings — report generation cannot resolve schemas"
   fi
-  for d in preflight references; do
+  for d in references shared; do
     [ -d "$CXSEC_HOME/$d" ] && ok "$d/ present" || warn "$d/ absent (re-run with --force to vendor it)"
   done
   # Mode 10's validator resolves the plugin root as parents[3], so this exact depth is
@@ -151,16 +152,17 @@ check_layout() {
   if [ -f "$CXSEC_HOME/skills/assess-patch-risk/scripts/validate_patch_risk_assessment.py" ]; then
     ok "patch-risk validator present at its load-bearing depth"
   else
-    warn "skills/assess-patch-risk/scripts/ absent — mode 10 cannot validate an assessment (--force vendors it)"
+    warn "skills/assess-patch-risk/scripts/ absent — mode 10 cannot validate an assessment (--force restores it)"
   fi
   [ -f "$CXSEC_HOME/LICENSE" ] && ok "LICENSE present" || warn "LICENSE absent — this runtime is Apache-2.0, ship the license"
 }
 
 check_scripts() {
   local s
-  for s in finalize_scan_contract.py config_preflight.py validate_scan_contract.py \
+  for s in finalize_scan_contract.py validate_scan_contract.py \
            report_projection.py validate_tracking_source.py normalize_candidates.py \
-           generate_in_scope_files.py generate_rank_input.py resolve_security_md.py; do
+           generate_in_scope_files.py generate_rank_input.py resolve_security_md.py \
+           copy_deep_review_input.py bind_repo_scopes.py threat_model_projection.py; do
     if [ -f "$CXSEC_HOME/scripts/$s" ]; then
       if "$PY" "$CXSEC_HOME/scripts/$s" --help >/dev/null 2>&1; then
         ok "$s runs"
@@ -179,10 +181,10 @@ check_patch_applied() {
   local upstream_hits cxsec_hits
   upstream_hits="$(grep -c 'codexSecurity\|"Codex Security"' "$f" || true)"
   cxsec_hits="$(grep -c 'cxsec' "$f" || true)"
-  if [ "$upstream_hits" -eq 0 ] && [ "$cxsec_hits" -ge 5 ]; then
+  if [ "$upstream_hits" -eq 0 ] && [ "$cxsec_hits" -ge "$PATCH_SITES" ]; then
     ok "SARIF rebrand patch applied ($cxsec_hits cxsec sites, 0 upstream)"
   else
-    bad "SARIF rebrand not applied: $upstream_hits upstream branding sites, $cxsec_hits cxsec sites (want 0 and 5)"
+    bad "SARIF rebrand not applied: $upstream_hits upstream branding sites, $cxsec_hits cxsec sites (want 0 and $PATCH_SITES)"
   fi
 }
 
@@ -280,26 +282,6 @@ check_patch_risk_validator() {
   fi
 }
 
-check_preflight() {
-  local f="$CXSEC_HOME/scripts/config_preflight.py"
-  [ -f "$f" ] || return
-  local out
-  if ! out="$("$PY" "$f" --profile security_scan --cwd "$PWD" \
-        --runtime-check delegation_available=true \
-        --runtime-check goal_tools_available=false \
-        --multi-agent-runtime-owner native --multi-agent-runtime-version v2 \
-        --multi-agent-session-cap 1 --multi-agent-runtime-provenance tool-surface \
-        --effective-config features.goals=true 2>&1)"; then
-    bad "capability preflight errored: $(printf '%s' "$out" | tail -1)"
-    return
-  fi
-  if printf '%s' "$out" | "$PY" -c 'import json,sys; d=json.load(sys.stdin); print(d["status"])' >/dev/null 2>&1; then
-    ok "capability preflight emits parseable JSON (profile security_scan)"
-  else
-    bad "capability preflight output is not the expected JSON"
-  fi
-}
-
 # Optional transports. Never fatal: modes 1-3, 5-7 and 9 need none of this.
 report_transports() {
   step "Optional transports (modes 4 and 8)"
@@ -322,28 +304,11 @@ verify_all() {
   check_layout
   check_scripts
   check_patch_applied
-  check_preflight
   if [ "$RUN_SMOKE" -eq 1 ]; then check_smoke; fi
   return 0
 }
 
 # ------------------------------------------------------------------- install
-
-# Nested vendor paths are copied with their upstream directory structure intact,
-# because the scripts inside them resolve the plugin root by counting parents.
-stage_skill_dirs() {
-  local src="$1" stage="$2" d
-  for d in ${VENDOR_SKILL_DIRS[@]+"${VENDOR_SKILL_DIRS[@]}"}; do
-    if [ -d "$src/$d" ]; then
-      mkdir -p "$stage/$(dirname "$d")"
-      cp -a "$src/$d" "$stage/$d"
-      find "$stage/$d" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
-      ok "$d/ ($(find "$stage/$d" -type f | wc -l) files)"
-    else
-      warn "$d/ not present at this source — mode 10 will have no assessment validator"
-    fi
-  done
-}
 
 # Copy the tree that ships in this repo. Already patched, so apply_patch will
 # report "already applied" rather than patching twice.
@@ -364,7 +329,6 @@ stage_from_local() {
       warn "$d/ not in the bundled runtime — skipped"
     fi
   done
-  stage_skill_dirs "$LOCAL_SRC" "$stage"
   for f in LICENSE PROVENANCE.md; do
     if [ -f "$LOCAL_SRC/$f" ]; then cp -a "$LOCAL_SRC/$f" "$stage/$f"; ok "$f"; fi
   done
@@ -415,7 +379,6 @@ fetch_and_stage() {
       warn "$d/ not present upstream at this ref — skipped"
     fi
   done
-  stage_skill_dirs "$src" "$stage"
   if [ -f "$root/LICENSE" ]; then
     cp -a "$root/LICENSE" "$stage/LICENSE"; ok "LICENSE"
   else
@@ -441,7 +404,7 @@ apply_patch() {
   # so it never prints "Reversed patch detected" or drops a .rej in the install.
   if [ -f "$target" ] \
      && ! grep -q 'codexSecurity\|"Codex Security"' "$target" \
-     && [ "$(grep -c 'cxsec' "$target")" -ge 5 ]; then
+     && [ "$(grep -c 'cxsec' "$target")" -ge "$PATCH_SITES" ]; then
     ok "already applied (source tree was pre-patched)"
     mkdir -p "$CXSEC_HOME/patches"
     cp -a "$patch_file" "$CXSEC_HOME/patches/$PATCH_NAME"
@@ -463,9 +426,11 @@ apply_patch() {
 # Restore files this port carries that upstream has since deleted. Each lands at its
 # path relative to $LOCAL_ADD_DIR, so a file at assets/local-additions/scripts/foo.py
 # installs as $CXSEC_HOME/scripts/foo.py. Runs after vendoring (which wipes scripts/)
-# so a --force re-vendor never loses them. Currently: resolve_security_md.py, the
-# offline SECURITY.md policy resolver upstream ported into the (unvendored) MCP app
-# in 0.1.28. See patches/README.md.
+# so a --force re-vendor never loses them. Currently the Python helpers upstream
+# ported into its (unvendored) TypeScript MCP launcher: resolve_security_md.py,
+# normalize_candidates.py, copy_deep_review_input.py, bind_repo_scopes.py and
+# skills/assess-patch-risk/scripts/validate_patch_risk_assessment.py. See
+# patches/README.md.
 restore_local_additions() {
   [ -d "$LOCAL_ADD_DIR" ] || return 0
   local added=0 rel dest f
@@ -476,7 +441,7 @@ restore_local_additions() {
     cp -a "$f" "$dest"
     ok "local addition: $rel"
     added=$((added + 1))
-  done < <(find "$LOCAL_ADD_DIR" -type f -print0 2>/dev/null)
+  done < <(find "$LOCAL_ADD_DIR" -name __pycache__ -prune -o -type f -print0 2>/dev/null)
   [ "$added" -gt 0 ] || true
 }
 
@@ -504,8 +469,7 @@ plugin version \`$PINNED_VERSION\`, commit \`${resolved:0:7}\`.
 Full commit: \`$resolved\`
 Licensed Apache-2.0 (see LICENSE).
 
-Source path: \`$SRC_SUBDIR/{$(IFS=,; echo "${VENDOR_DIRS[*]}")}\`
-plus \`$SRC_SUBDIR/${VENDOR_SKILL_DIRS[0]}\`, kept at its upstream depth.
+Source path: \`$SRC_SUBDIR/{$(IFS=,; echo "${VENDOR_DIRS[*]}")}\`.
 
 Installed by \`cxsec-security/scripts/install.sh\` on $(date -u +%Y-%m-%dT%H:%M:%SZ).
 
@@ -523,7 +487,7 @@ Layout is load-bearing: \`finalize_scan_contract.py\` resolves schemas as
 
 The vendored code is **not** a pristine copy. See \`patches/README.md\`.
 
-- \`patches/$PATCH_NAME\` — renames the five cosmetic SARIF branding sites in
+- \`patches/$PATCH_NAME\` — renames the four cosmetic SARIF branding sites in
   \`scripts/finalize_scan_contract.py\` so generated SARIF is attributed to
   \`cxsec-security\`.
 - \`scripts/resolve_security_md.py\` — a carried-forward local addition. Upstream
@@ -533,8 +497,25 @@ The vendored code is **not** a pristine copy. See \`patches/README.md\`.
   upstream Python version (byte-identical 0.1.24–0.1.26), which mode 7 and the
   repo-scan policy chain invoke. Self-contained stdlib; same concatenation
   semantics the TS helper documents.
+- \`scripts/normalize_candidates.py\` — a carried-forward local addition. Upstream
+  ported diff-scan candidate normalization into the MCP app in 0.2.0 and deleted
+  the Python helper. Kept at its last upstream version with the later TypeScript
+  behaviour changes ported back (raw POSIX path bytes, final-row and ambiguous
+  carriage-return handling). Output and \`candidate_id\` values are unchanged.
+- \`skills/assess-patch-risk/scripts/validate_patch_risk_assessment.py\` — a
+  carried-forward local addition, kept at its upstream depth (it resolves the
+  plugin root as \`parents[3]\`). Upstream ported it into the MCP app in 0.3.0;
+  the carried copy includes the later rule rejecting \`merge\` with critical
+  regression likelihood.
+- \`scripts/copy_deep_review_input.py\`, \`scripts/bind_repo_scopes.py\` — carried-forward
+  local additions. Upstream retired these \`generate_rank_input.py\` subcommands
+  (\`copy-deep-review-input\`, \`bind-repo-scopes\`) into the MCP launcher in 0.3.0.
+  Re-implemented from the TypeScript helpers; same CLI and output format.
 
-Re-vendoring overwrites both. \`install.sh\` re-applies the patch and restores the
+All carried helpers are held to upstream's current TypeScript test suites, ported to
+pytest under the skill repo's \`tests/\`.
+
+Re-vendoring overwrites the patch and removes the additions. \`install.sh\` re-applies the patch and restores the
 local additions automatically, then verifies the result.
 
 Canonical wire literals (\`codex-security.*\` documentTypes, the
@@ -570,18 +551,8 @@ do_install() {
     fi
     cp -a "$stage/$d" "$CXSEC_HOME/$d"
   done
-  for d in ${VENDOR_SKILL_DIRS[@]+"${VENDOR_SKILL_DIRS[@]}"}; do
-    [ -d "$stage/$d" ] || continue
-    if [ -e "$CXSEC_HOME/$d" ]; then
-      local skill_backup="$CXSEC_HOME/$d.bak.$(date -u +%Y%m%dT%H%M%SZ)"
-      mv "$CXSEC_HOME/$d" "$skill_backup"
-      warn "existing $d/ moved to $(basename "$skill_backup")"
-    fi
-    mkdir -p "$CXSEC_HOME/$(dirname "$d")"
-    cp -a "$stage/$d" "$CXSEC_HOME/$d"
-  done
   if [ -f "$stage/LICENSE" ]; then cp -a "$stage/LICENSE" "$CXSEC_HOME/LICENSE"; fi
-  ok "vendored ${VENDOR_DIRS[*]} ${VENDOR_SKILL_DIRS[*]}"
+  ok "vendored ${VENDOR_DIRS[*]}"
 
   apply_patch
   restore_local_additions

@@ -6,13 +6,26 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import sys
 import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-CWE = re.compile(r"(?i)CWE-(\d+)")
+# Upstream ported this helper to TypeScript (mcp-app/src/helpers/normalize-candidates.ts)
+# and deleted it. This carried copy tracks that implementation, so string handling
+# follows JavaScript semantics wherever Python's differs: ASCII-only \d, the
+# String.prototype.trim whitespace set, and UTF-16 code-unit sort order.
+CWE = re.compile(r"(?i)CWE-(\d+)", re.ASCII)
+LONE_SURROGATE = re.compile("[\ud800-\udfff]")
+# Surrogates surrogateescape cannot map back to a byte (only U+DC80-U+DCFF can).
+UNENCODABLE_SURROGATE = re.compile("[\ud800-\udc7f\udd00-\udfff]")
+JS_WHITESPACE = (
+    "\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006"
+    "\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
+)
+WINDOWS = sys.platform == "win32"
 ROLES = {
     "entrypoint": 0,
     "entrypoint/wrapper": 1,
@@ -33,13 +46,23 @@ FIELDS = {
 }
 
 
+def js_trim(value: str) -> str:
+    return value.strip(JS_WHITESPACE)
+
+
+def utf16_key(value: str) -> bytes:
+    # Big-endian UTF-16 bytes compare in code-unit order, which is JavaScript's
+    # default string order; surrogatepass keeps surrogateescape'd path bytes sortable.
+    return value.encode("utf-16-be", "surrogatepass")
+
+
 def text_field(row: dict[str, Any], field: str, *, required: bool = True) -> str | None:
     value = row.get(field)
     if value is None and not required:
         return None
-    if not isinstance(value, str) or not value.strip():
+    if not isinstance(value, str) or not js_trim(value):
         raise ValueError(f"{field}: expected a non-empty string")
-    return value.strip()
+    return js_trim(value)
 
 
 def cwe_ids(row: dict[str, Any]) -> list[str]:
@@ -50,27 +73,54 @@ def cwe_ids(row: dict[str, Any]) -> list[str]:
     for item in value:
         if not isinstance(item, str):
             raise ValueError("cwe_ids: expected CWE strings")
-        match = CWE.fullmatch(item.strip())
+        match = CWE.fullmatch(js_trim(item))
         if match is None or int(match[1]) < 1:
             raise ValueError(f"cwe_ids: unsupported value {item!r}")
         found.add(int(match[1]))
     return [f"CWE-{number}" for number in sorted(found)]
 
 
+def resolve_path(value: str | Path, *, strict: bool = True) -> Path:
+    """Canonicalize a path the way upstream's resolvePosixPath does.
+
+    Non-strict resolution appends only genuinely absent trailing components to the
+    deepest existing canonical ancestor. Unlike Path.resolve(strict=False) it rejects
+    an existing dangling symlink (which would otherwise redirect a write to its
+    target) and refuses to cancel an unresolved component with "..". Symlink loops
+    surface as OSError, never as Python 3.11's RuntimeError.
+    """
+    path = Path(value)
+    if UNENCODABLE_SURROGATE.search(str(path)) and not WINDOWS:
+        raise ValueError("path: UTF-8 cannot encode an unpaired surrogate")
+    current = str(path if path.is_absolute() else Path.cwd() / path)
+    missing: list[str] = []
+    while True:
+        try:
+            return Path(os.path.realpath(current, strict=True), *reversed(missing))
+        except FileNotFoundError:
+            if strict or os.path.lexists(current):
+                raise
+            name = os.path.basename(current)
+            if name == "..":
+                raise
+            missing.append(name)
+            current = os.path.dirname(current)
+
+
 def relative_file(value: Any, repo_root: Path) -> tuple[str, Path]:
     if not isinstance(value, str) or not value or "\0" in value:
         raise ValueError("path: expected a non-empty repository-relative path")
     raw = value
-    if sys.platform == "win32":
+    if WINDOWS:
         raw = raw.replace("\\", "/")
     path = PurePosixPath(raw)
     if (
         path.is_absolute()
         or ".." in path.parts
-        or (sys.platform == "win32" and re.match(r"^[A-Za-z]:", raw))
+        or (WINDOWS and re.match(r"^[A-Za-z]:", raw))
     ):
         raise ValueError("path: expected a repository-relative path without traversal")
-    resolved = (repo_root / raw).resolve(strict=True)
+    resolved = resolve_path(repo_root / raw)
     try:
         relative = resolved.relative_to(repo_root).as_posix()
     except ValueError as error:
@@ -81,6 +131,9 @@ def relative_file(value: Any, repo_root: Path) -> tuple[str, Path]:
 
 
 def positive_line(value: Any, field: str) -> int:
+    # JSON has one number type: 2.0 is the integer 2, as Number.isInteger agrees.
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
     if not isinstance(value, int) or isinstance(value, bool) or value < 1:
         raise ValueError(f"{field}: expected a positive integer")
     return value
@@ -101,7 +154,7 @@ def normalize_locations(
             raise ValueError(f"locations: unsupported fields {', '.join(sorted(unknown))}")
         relative, source = relative_file(item.get("path"), repo_root)
         if (
-            not relative.strip()
+            not js_trim(relative)
             or "\\" in relative
             or any(":" in part for part in PurePosixPath(relative).parts)
         ):
@@ -128,7 +181,7 @@ def normalize_locations(
         normalized.values(),
         key=lambda item: (
             ROLES[item["role"]],
-            item["path"],
+            utf16_key(item["path"]),
             item["start_line"],
             item["end_line"],
         ),
@@ -136,7 +189,10 @@ def normalize_locations(
 
 
 def read_scope(path: Path, repo_root: Path, *, allow_missing: bool = False) -> set[str]:
-    contents = path.read_bytes().decode("utf-8")
+    raw = path.read_bytes()
+    # POSIX inventories may list raw, non-UTF-8 path bytes; surrogateescape keeps them
+    # round-trippable through pathlib (upstream's decodePosixBytes does the same).
+    contents = raw.decode("utf-8") if WINDOWS else raw.decode("utf-8", "surrogateescape")
     lines = contents.split("\n")
     listed_rows = set(lines)
 
@@ -150,34 +206,40 @@ def read_scope(path: Path, repo_root: Path, *, allow_missing: bool = False) -> s
     carriage_rows = {
         line: (is_scope_file(line), is_scope_file(line.removesuffix("\r")))
         for line in lines
-        if line.endswith("\r") and line != "\r" and sys.platform != "win32"
+        if line.endswith("\r") and line != "\r" and not WINDOWS
     }
-    crlf_evidence = any(line == "\r" for line in lines) or any(
-        stripped and not literal for literal, stripped in carriage_rows.values()
+    # The final row has no terminating newline, so a trailing "\r" there is part of the
+    # name, never a line ending: it neither counts as CRLF evidence nor gets stripped.
+    crlf_evidence = any(
+        line == "\r" or (line in carriage_rows and carriage_rows[line][1] and not carriage_rows[line][0])
+        for line in lines[:-1]
     )
     literal_evidence = any(literal and not stripped for literal, stripped in carriage_rows.values())
 
     scope: set[str] = set()
     for number, line in enumerate(lines, 1):
-        if sys.platform == "win32" or line == "\r":
+        final_literal = number == len(lines)
+        if not final_literal and (WINDOWS or line == "\r"):
             line = line.removesuffix("\r")
-        elif line.endswith("\r"):
+        elif not final_literal and line.endswith("\r"):
             literal, stripped = carriage_rows[line]
+            trimmed = line.removesuffix("\r")
+            # With deleted paths allowed, a missing stripped name may be a deleted file
+            # rather than a CRLF artifact, so the literal match alone cannot decide.
+            if allow_missing and literal and not stripped and trimmed not in listed_rows:
+                raise ValueError(f"in-scope file row {number}: ambiguous carriage-return paths")
             if stripped and not literal:
-                line = line.removesuffix("\r")
+                line = trimmed
             elif stripped and literal:
-                if number == len(lines) and not contents.endswith("\n"):
-                    pass
-                elif line.removesuffix("\r") in listed_rows:
-                    pass
-                elif crlf_evidence and not literal_evidence:
-                    line = line.removesuffix("\r")
-                elif literal_evidence and not crlf_evidence:
-                    pass
-                else:
-                    raise ValueError(f"in-scope file row {number}: ambiguous carriage-return paths")
+                if trimmed not in listed_rows:
+                    if crlf_evidence and not literal_evidence:
+                        line = trimmed
+                    elif not literal_evidence or crlf_evidence:
+                        raise ValueError(
+                            f"in-scope file row {number}: ambiguous carriage-return paths"
+                        )
             elif not literal and crlf_evidence:
-                line = line.removesuffix("\r")
+                line = trimmed
         if not line:
             continue
         try:
@@ -187,10 +249,10 @@ def read_scope(path: Path, repo_root: Path, *, allow_missing: bool = False) -> s
                 candidate = PurePosixPath(line)
                 if candidate.is_absolute() or ".." in candidate.parts or "\0" in line:
                     raise ValueError(f"in-scope file row {number}: unsafe deleted path") from error
-                resolved = (repo_root / line).resolve(strict=False)
                 try:
+                    resolved = resolve_path(repo_root / line, strict=False)
                     relative = resolved.relative_to(repo_root).as_posix()
-                except ValueError as escaped:
+                except (OSError, ValueError) as escaped:
                     raise ValueError(
                         f"in-scope file row {number}: path escapes repository"
                     ) from escaped
@@ -227,21 +289,25 @@ def normalize_candidate(
     return result
 
 
+def stable_json(value: Any) -> str:
+    text = json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    # Match upstream's JSON.stringify, which escapes lone surrogates. They arise from
+    # surrogateescape-decoded path bytes and cannot be written as UTF-8 otherwise.
+    return LONE_SURROGATE.sub(lambda match: f"\\u{ord(match[0]):04x}", text)
+
+
 def identity(row: dict[str, Any]) -> str:
-    return json.dumps(
+    return stable_json(
         {
             "cwe_ids": row["cwe_ids"],
             "locations": row["locations"],
             "instance": row.get("instance"),
-        },
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
+        }
     )
 
 
 def merged_text(group: list[dict[str, Any]], field: str) -> str:
-    return "\n".join(sorted({item[field] for item in group if field in item}))
+    return "\n".join(sorted({item[field] for item in group if field in item}, key=utf16_key))
 
 
 def combine(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -249,7 +315,7 @@ def combine(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for row in rows:
         groups.setdefault(identity(row), []).append(row)
     combined: list[dict[str, Any]] = []
-    for key, group in sorted(groups.items()):
+    for key, group in sorted(groups.items(), key=lambda entry: utf16_key(entry[0])):
         candidate_id = hashlib.sha256(key.encode()).hexdigest()[:16]
 
         result = {
@@ -269,7 +335,7 @@ def combine(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--input", nargs="+", required=True, help="Candidate JSONL inputs.")
     parser.add_argument("--out", required=True, help="Combined candidate JSONL output.")
     parser.add_argument("--repo-root", required=True, help="Repository root for candidate paths.")
@@ -281,12 +347,15 @@ def main() -> None:
     )
     args = parser.parse_args()
     try:
-        repo_root = Path(args.repo_root).expanduser().resolve(strict=True)
+        repo_root = resolve_path(Path(args.repo_root).expanduser())
         if not repo_root.is_dir():
             raise ValueError("--repo-root: expected a directory")
-        output = Path(args.out).expanduser().resolve(strict=False)
-        scope_path = Path(args.in_scope_files).expanduser().resolve(strict=True)
-        inputs = sorted({Path(value).expanduser().resolve(strict=True) for value in args.input})
+        output = resolve_path(Path(args.out).expanduser(), strict=False)
+        scope_path = resolve_path(Path(args.in_scope_files).expanduser())
+        inputs = sorted(
+            {resolve_path(Path(value).expanduser()) for value in args.input},
+            key=lambda path: utf16_key(str(path)),
+        )
         if output in inputs:
             raise ValueError("--out: must not also be an input")
         if output == scope_path:
@@ -295,17 +364,17 @@ def main() -> None:
         line_counts: dict[Path, int] = {}
         rows: list[dict[str, Any]] = []
         for source in inputs:
-            with source.open(encoding="utf-8") as handle:
-                for number, line in enumerate(handle, 1):
-                    if not line.strip():
-                        continue
-                    try:
-                        row = json.loads(line)
-                        if not isinstance(row, dict):
-                            raise ValueError("expected a JSON object")
-                        rows.append(normalize_candidate(row, repo_root, scope, line_counts))
-                    except (ValueError, TypeError, OSError) as error:
-                        raise ValueError(f"{source} row {number}: {error}") from error
+            # Split on "\n" only, like upstream: a bare "\r" is not a row separator.
+            for number, line in enumerate(source.read_bytes().decode("utf-8").split("\n"), 1):
+                if not js_trim(line):
+                    continue
+                try:
+                    row = json.loads(line)
+                    if not isinstance(row, dict):
+                        raise ValueError("expected a JSON object")
+                    rows.append(normalize_candidate(row, repo_root, scope, line_counts))
+                except (ValueError, TypeError, OSError) as error:
+                    raise ValueError(f"{source} row {number}: {error}") from error
         combined = combine(rows)
         output.parent.mkdir(parents=True, exist_ok=True)
         temporary: Path | None = None
@@ -314,16 +383,15 @@ def main() -> None:
                 mode="w",
                 encoding="utf-8",
                 dir=output.parent,
-                prefix=f".{output.name}.",
+                # Fixed short prefix: a long output basename plus a random suffix
+                # would exceed NAME_MAX.
+                prefix=".candidates-",
                 suffix=".tmp",
                 delete=False,
             ) as handle:
                 temporary = Path(handle.name)
                 for row in combined:
-                    handle.write(
-                        json.dumps(row, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-                        + "\n"
-                    )
+                    handle.write(stable_json(row) + "\n")
             temporary.replace(output)
         finally:
             if temporary is not None:

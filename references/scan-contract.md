@@ -26,6 +26,8 @@ Retention is an explicit consumer decision. Producing a sealed bundle must not s
 
 A sealed manifest records the terminal timestamp and hashes for the canonical documents and immutable evidence receipts included in that bundle. Readable reports and generated exports are projections and are not included in the canonical seal. Later adapters may read the sealed bundle to create projections, but must not mutate the sealed manifest or canonical documents. Store projections separately. Every sealed manifest includes exactly one artifact record for each canonical JSON document, and artifact paths must not repeat.
 
+Producers should use UTC ISO 8601 timestamps in the native SDK or plugin format. All schema-valid fractional widths remain readable on supported Python versions; parsing uses native microsecond precision. History and finding queries use native date precision and stable ID tie-breakers; ordering beyond millisecond precision is not guaranteed. Stored timestamp text remains unchanged.
+
 `scan.status` records why the bundle was sealed:
 
 | Status | Meaning |
@@ -43,7 +45,7 @@ Upstream recovers a stopped scan from its SQLite workbench. This port keeps scan
 state in files, so recovery is reading what the interrupted scan already wrote:
 `<scan_dir>/checkpoint-findings.json`, any `<discovery_dir>/worker-*.json` or
 `<discovery_dir>/rounds/round-*/result.json`, and the candidate ledgers. Report
-those retained results with incomplete coverage and their original evidence.
+those retained results with their remaining work and original evidence.
 
 Only admit work that was actually finished before the stop. A checkpoint is not a
 validated finding, and a partial round result is not an accepted round. After an
@@ -117,7 +119,6 @@ Record:
 - detailed receipt references
 - explicit exclusions
 - deferred work
-- completeness
 
 `mode` records the requested scan workflow:
 
@@ -133,17 +134,19 @@ Record:
 
 `inventoryStrategy` records how the producer enumerated the reviewed content, independently of the requested scan workflow:
 
+The discovery helper's `in_scope_files.txt` input contains one UTF-8 path per line. LF and CRLF separators are accepted; filenames containing CR or LF are unsupported. Other path whitespace and spelling are preserved.
+
 For a whole-repository Deep scan, keep `inventoryStrategy` as `repository`; repeated discovery is workflow metadata, not a different inventory strategy.
 
 | Inventory strategy | Meaning |
 | --- | --- |
-| `repository` | Repository-wide tracked source-like file inventory |
+| `repository` | Repository-wide file inventory |
 | `scoped_path` | Repository inventory constrained to requested paths |
 | `diff` | Files selected from the reviewed Git change set |
 | `directory` | Deterministic non-Git directory inventory |
 | `custom` | Producer-defined inventory described by detailed receipts |
 
-Use `complete` when the requested scope was fully reviewed, `partial` when in-scope work was deferred, and `unknown` when the producer cannot establish enough coverage to make that distinction.
+Coverage lists reviewed surfaces, exclusions, and follow-up work. The manifest records execution status. There is no `completeness` field; existing sealed bundles retain legacy metadata unchanged.
 
 Map detailed ledger closure into completed surface summaries in this order:
 
@@ -168,7 +171,7 @@ The three canonical JSON files are also the only semantic inputs to final report
 Record report-specific semantics without duplicating data already represented elsewhere:
 
 - `scan.scope`: optional narrative `summary`, reviewed artifact names, runtime/test status, validation mode, scan context, and limitations. Include/exclude paths remain the authoritative scope boundaries.
-- `scan.threatModel`: concise summary plus assets, trust boundaries, attacker capabilities, security objectives, and assumptions.
+- `scan.threatModel`: structured summary plus assets, trust boundaries, attacker capabilities, security objectives, and assumptions, or `{ "format": "markdown", "content": "<exact model text>" }` for a retained document. Optional model `scope` and `origin` identify the modeled paths and source separately from the scan's scope. `finalize_scan_contract.py` derives `<scan_dir>/threatmodel.md` from this content; it is an exportable projection, not an independently authored input.
 - finding `validation`: validation method, direct evidence, counterevidence, and the conclusion used by the report.
 - finding `codeEvidence`: stable, exact source snippets with labels, locations, language, and explanations; `rootCause`, `validation`, and `attackPath` select the snippets they need through `evidenceRefs`.
 - finding `rootCause`: the violated invariant and the code that breaks it. Do not substitute a path/line restatement for the explanation.
@@ -182,6 +185,8 @@ Record report-specific semantics without duplicating data already represented el
 These fields are optional for compatibility with existing v1 canonical artifacts. When omitted, finalization emits explicit, deterministic fallback text derived only from the remaining canonical JSON. It never reads an existing report to recover missing semantics.
 
 ## Schemas
+
+New completed findings must match `schemas/tools/scan-draft.schema.json`. Finalization rejects legacy field aliases, malformed optional details, and invalid semantic slugs instead of repairing them. Historical sealed reports are validated through an in-memory compatibility adapter; their saved bytes remain unchanged. Stopped-scan recovery still salvages saved evidence.
 
 - `schemas/scan-manifest.schema.json`
 - `schemas/findings.schema.json`

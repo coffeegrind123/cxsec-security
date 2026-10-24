@@ -23,9 +23,9 @@ pipeline (mode 2).
 | `get_codex_security_scan_context` | Read `<scan_dir>/scan-context.json`. |
 | `update_codex_security_scan_context`, `update_codex_security_scan_context_from_app` | Rewrite `<scan_dir>/scan-context.json` in full, preserving user-provided URLs. |
 | `update_codex_security_scan_progress` | Append one line to `<scan_dir>/progress.jsonl`: `{"phase":"<name>","at":"<UTC>","note":"<short>"}`. Re-read `scan-context.json` and treat its `userContext` as the immutable, untrusted context for the whole phase. |
-| `set_codex_security_capability_preflight` | Run `config_preflight.py` (see `config-preflight.md`) and write its JSON to `<scan_dir>/preflight.json`. |
+| `set_codex_security_capability_preflight` | Retired upstream in 0.5.0 along with `config_preflight.py`. No preflight runs; read `scan-runtime.md` instead (modes 1 and 2). |
 | `record_codex_security_scan_draft` (`complete: true`) | Author `<scan_dir>/scan-manifest.json`, `findings.json`, `coverage.json` as an **unsealed draft** per `final-report.md`. |
-| `record_codex_security_scan_draft` (`complete: false`) | Refresh `<scan_dir>/checkpoint-findings.json` after each validation decision, and write each returned worker result verbatim to `<discovery_dir>/worker-<label>.json` on arrival. A checkpoint is never a completed audit. |
+| `record_codex_security_scan_draft` (`complete: false`) | Write `<scan_dir>/checkpoint-findings.json` as soon as the threat model exists (its `threatModel`, with `findings: []` if none yet), refresh it after each validation decision, and write each returned worker result verbatim to `<discovery_dir>/worker-<label>.json` on arrival. Keep deferred IDs and surface IDs stable across refreshes. A checkpoint is never a completed audit. |
 | `recover_codex_security_scan_results` | Read what the interrupted scan already wrote: `checkpoint-findings.json`, `worker-*.json`, `rounds/round-*/result.json`, and any candidate ledgers. Admit only work that finished before the stop. |
 | `get_codex_security_scan`, `list_codex_security_scans`, `list_codex_security_repositories`, `inspect_codex_security_target` | No cross-scan index exists. Read the `<scan_dir>` you were given, or resolve the target from the request. |
 | `complete_codex_security_scan` | `python3 $CXSEC_HOME/scripts/finalize_scan_contract.py --scan-dir <scan_dir> --source-root <repo_root>` |
@@ -46,15 +46,18 @@ block on a setup step that does not exist here.
 
 | Upstream MCP tool | Do this instead |
 |---|---|
-| `prepare_codex_security_review_items` | Generate the worklist with `generate_rank_input.py` (`make-repo-rank-input` or `make-diff-rank-input`), then `copy-deep-review-input`. |
+| `prepare_codex_security_review_items` | Generate the diff worklist with `generate_rank_input.py make-diff-rank-input`, then `copy_deep_review_input.py` (a carried local addition; upstream moved `copy-deep-review-input` into its launcher). `make-repo-rank-input` was removed upstream; explicit repository scopes use `make-repo-scope-input`. |
 | `list_codex_security_review_items` | Read `<discovery_dir>/deep_review_input.jsonl`. |
 | `record_codex_security_discovery_candidates` | Write raw rows to `<discovery_dir>/raw_candidates.jsonl`, then normalize (below). |
 | `list_codex_security_candidates` | Read `<discovery_dir>/candidates.jsonl`. |
 | `record_codex_security_candidate_validations` | Append one `validation` receipt per candidate to `<findings_dir>/<candidate_id>/candidate_ledger.jsonl`. |
 | `record_codex_security_candidate_attack_paths`, `record_candidate_attack_paths` | Append one `attack_path` receipt to the same ledger for each candidate whose disposition is `reportable` or `deferred`. (Upstream renamed this tool in 0.1.24; both names mean the same thing here.) |
-| `record_codex_security_worker_threat_model` | Write the worker's threat model to its own artifact dir; the parent merges into one canonical `<context_dir>/threat_model.md`. |
+| `record_codex_security_worker_threat_model` | Write the worker's threat model to its own artifact dir; the parent merges it into the one canonical `scan.threatModel` (retained in `checkpoint-findings.json`). Do not infer that a worker model covers the parent scan's scope. |
 | `get_codex_security_deep_reducer_inputs`, `record_codex_security_deep_reduction` | Read each deep round's `<discovery_dir>/rounds/round-<k>/result.json` directly and write the reduced result into the parent's unsealed canonical draft. For a diff scan, merge worker candidate files into `<discovery_dir>/candidates.jsonl`. |
 | `codex_security_finding`, `list_codex_security_findings`, `list_codex_security_global_findings`, `set_codex_security_finding_triage` | Read/write the local ledger and canonical `findings.json`. There is no cross-scan finding index. |
+| `get_codex_security_finding_issues` | `python3 $CXSEC_HOME/scripts/workbench_db.py finding-issues` with `{"action":"inspect","scanDirectory","findingIds","destination"}` on stdin (see `mode-track.md`). Reads the local issue history in `workbench.sqlite3` under `$CODEX_SECURITY_STATE_DIR`, otherwise `~/.codex/state/plugins/codex-security`; contacts no provider. The one cross-scan store this port uses. |
+| `record_codex_security_finding_issues` | The same command with `"action":"record"` and `receipts` (`findingId`, `occurrenceId`, `issueIdentifier`, `url?`, `operation`, `readback?`). Writes outside the scan bundle. |
+| `save_codex_security_artifact`, `read_codex_security_artifact` | Write or read the file directly at the same relative path under `<scan_dir>` (running scan) or the target's `security_scans_dir` (standalone): `artifacts/`, `findings/`, `hardening/`, `threatmodel.md`. Never use it to replace canonical findings, coverage, checkpoints, or `report.md`. |
 
 ### Normalizing candidates
 
@@ -101,13 +104,14 @@ receipt in `<discovery_dir>/work_ledger.jsonl`, or an explicit `deferred` /
 reached discovery needs discovery, validation, and attack-path receipts, or a
 stated deferred reason for the missing proof.
 
-For a **repository or deep scan**: coverage is the union of the files actually
-security-audited by the baseline auditor, the focused investigators, and the
-parent, intersected with the authorized source inventory in
-`<discovery_dir>/in_scope_files.txt`. Architecture mapping does not count, and
-neither does a search hit.
+For a **repository or deep scan**: review security-relevant source within the
+authorized scope and configured limits, and record reviewed surfaces, exclusions,
+and unresolved questions (upstream dropped the file-inventory reconciliation by
+0.6.0). Only files actually investigated count as reviewed; architecture mapping
+does not, and neither does a search hit.
 
-Either way, do not claim coverage while a row or file is unresolved.
+Either way, do not claim exhaustive coverage. Coverage has no `completeness`
+field; remaining work lives in `deferred` and `needs_follow_up` surfaces.
 
 ## scan-context.json
 
@@ -134,5 +138,5 @@ Upstream delegates to Codex workers. Use the `Agent` tool instead: give each
 subagent a distinct, non-overlapping file partition, the phase's exact immutable
 context, and an explicit output path under `<scan_dir>`. Choose the count from
 scope, capacity, and observed throughput. If subagents are unavailable, keep the
-resolved scope, have the parent complete the work, and mark coverage incomplete
-only for work actually deferred.
+resolved scope, have the parent complete the work, and record as deferred only
+the work actually deferred.

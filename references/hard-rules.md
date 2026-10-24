@@ -33,22 +33,22 @@ MCP-ownership machinery replaced by the file protocol in
   the next forward transition; work already in flight keeps the immutable context
   it was given. Never repeat completed work.
 
-## Capability preflight
+## Runtime tools and tool results
 
-- Only a top-level **standard** scan (mode 1) and a **diff** scan (mode 2) read
-  `config-preflight.md` and run the capability helper, once. Resolve only the
-  minimum target, scope, revision, or launch arguments needed beforehand; do not
-  inspect source or launch scan workers until it returns `ready`.
-- A **deep** scan (mode 3) has no parent capability preflight: do not load the
-  preflight reference, run the helper, request remediation, or publish preflight
-  checks.
-- Configured worker capacity is a maximum, not a required number of running
-  workers. Do not describe configured slots as running workers or as reduced
-  coverage.
-- For a blocked, incomplete, or failed preflight, report the exact reason and
-  preserve `<scan_dir>` while recovery remains possible. Present the
-  helper-reported configuration path and exact remediation and ask before editing
-  persistent configuration.
+- There is no capability preflight; upstream retired it in 0.5.0. A top-level
+  **standard** scan (mode 1) and a **diff** scan (mode 2) read `scan-runtime.md`
+  once after `scan-context.json` exists, then begin source review using available
+  subagents or doing the work yourself. Missing optional tools never block source
+  review.
+- A **deep** scan (mode 3) does not read `scan-runtime.md`; you validate its
+  ownership, target, scope, and sandbox and manage its rounds yourself.
+- Any worker allowance is a maximum, not a required number of running workers.
+  Do not describe configured slots as running workers or as reduced coverage.
+- Check the result of each tool operation before using it: a shell command can
+  fail with a nonzero exit status, and an MCP response can carry `isError: true`.
+  Preserve and act on that diagnostic before parsing output as JSON or reporting
+  success. Parse only the intended JSON output of a successful command; shell
+  error text and truncated previews are not JSON documents.
 
 ## Method
 
@@ -61,9 +61,11 @@ MCP-ownership machinery replaced by the file protocol in
   until `findings/<candidate_id>/candidate_ledger.jsonl` shows discovery,
   validation, and attack-path receipts for that exact candidate, or an explicit
   deferred reason for the missing proof.
-- In a repository or deep scan, coverage is reconciled against the authorized
-  source inventory: only files actually security-audited count. Architecture
-  mapping does not, and neither does a search hit.
+- In a repository or deep scan, review security-relevant source within the
+  authorized scope and configured limits, and record reviewed surfaces,
+  exclusions, and unresolved questions. Only files actually investigated count as
+  reviewed; architecture mapping does not, and neither does a search hit. Never
+  claim exhaustive coverage.
 - Inspect the repository before making decisions. Avoid destructive commands,
   interactive editors, and broad unbounded scans; prefer targeted, reversible
   commands. Analyze only the authorized current state, not other revisions or Git
@@ -78,8 +80,8 @@ MCP-ownership machinery replaced by the file protocol in
 ## Cancellation and recovery
 
 - Use explicit cancellation only when the user explicitly cancels: stop, leave
-  `<scan_dir>` intact, and report retained findings and pending work with
-  incomplete coverage.
+  `<scan_dir>` intact, and report retained findings, pending work, and remaining
+  scope.
 - Recording a scan as failed (writing `<scan_dir>/scan-failed.md`) is terminal. Do
   it only for a confirmed unrecoverable blocker after documented recovery is
   exhausted. Never fail a scan because work remains, rounds or subagents are still

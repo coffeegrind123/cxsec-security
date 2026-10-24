@@ -23,7 +23,7 @@ column; use it when two modes look close.
 | 2 | **Diff scan** | Review a *change set*: pull request, commit, branch diff, or working-tree patch. Git-backed. | `references/mode-diff-scan.md` |
 | 3 | **Deep scan** | Explicitly asked for *deep*, *exhaustive*, *multi-pass*, or *variance-reducing*. Repo-wide only, never a diff. | `references/mode-deep-scan.md` |
 | 4 | **Triage** | The user *already has* findings — SARIF, CVE/GHSA, advisories, scanner tickets, bug-bounty reports, Jira/Linear issues — and wants repo-impact verdicts. No discovery. | `references/mode-triage.md` |
-| 5 | **Fix** | Fix *and verify* one already-identified finding. | `references/mode-fix.md` |
+| 5 | **Fix** | Fix *and verify* one already-identified finding — or, when explicitly asked, only verify that an existing fix remediates it (its Verify-Only section; edits nothing). | `references/mode-fix.md` |
 | 6 | **Write-up** | Turn notes/PoCs/findings into a distributable disclosure report. | `references/mode-writeup.md` |
 | 7 | **Policy** | Author, review, or update a repository `SECURITY.md`. | `references/mode-policy.md` |
 | 8 | **Track** | File findings as Linear/Jira/GitHub issues, or a draft GitHub security advisory. | `references/mode-track.md` |
@@ -39,8 +39,9 @@ column; use it when two modes look close.
   discovery many times over; do not choose it implicitly.
 - **Findings already in hand → 4, not 1.** Mode 4 never discovers. If the user
   wants *new* bugs found, it is 1, 2, or 3.
-- **"Fix this" → 5. "Write this up" → 6. "File this" → 8.** These operate on a
-  finding that already exists and are frequently chained after 1–4.
+- **"Fix this" → 5. "Does this fix close CVE-X?" → 5, Verify-Only. "Write this
+  up" → 6. "File this" → 8.** These operate on a finding that already exists and
+  are frequently chained after 1–4.
 - **"How do we stop this whole class of bug?" → 9, not 5.** Mode 5 patches one
   instance; mode 9 changes the structure.
 - **"Is this patch safe to merge?" → 10, not 2.** Mode 2 hunts for vulnerabilities
@@ -62,9 +63,9 @@ column; use it when two modes look close.
    MCP server that is not available here** — that file is the authoritative
    file-based replacement, and the mode files assume you have read it.
 2. Read `references/hard-rules.md`.
-3. Run the capability preflight in `references/config-preflight.md` — **modes 1
-   and 2 only**. A deep scan has no parent capability preflight; do not run the
-   helper for it.
+3. Read `references/scan-runtime.md` once — **modes 1 and 2 only**. It replaces
+   the capability preflight upstream retired; missing optional tools never block
+   source review. A deep scan does not read it.
 
 Modes 4–10 are standalone and do not need a `<scan_dir>` unless the user supplies
 one.
@@ -150,7 +151,7 @@ Read on demand; do not preload.
 **Contracts and shared rules** — `workbench-file-protocol.md`, `hard-rules.md`,
 `scan-artifacts.md`, `scan-artifacts-and-ledger.md`, `scan-contract.md`,
 `final-report.md`, `finding-detail-fields.md`, `sarif-adapter.md`,
-`config-preflight.md`, `security-guidance.md`,
+`scan-runtime.md`, `investigation-time-budget.md`, `security-guidance.md`,
 `install.md` (runtime install, verification failures, re-vendoring, offline hosts)
 
 **Depth references** — `validation-guidance.md` (per-class proof tuples; the

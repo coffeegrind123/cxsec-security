@@ -4,7 +4,7 @@ Use this reference only for diff scans that need auditable candidate coverage or
 
 ## Artifact Requirements
 
-- Load the per-scan threat model path from `scan-artifacts.md` as the repo-specific threat-model source of truth.
+- Load the canonical per-scan threat model defined in `scan-artifacts.md` as the repo-specific threat-model source of truth.
 - Use the artifact paths from `scan-artifacts.md` for `seed_research.md`, `deep_review_input.jsonl` when a scoped file-review worklist is needed, `work_ledger.jsonl` when a scoped file-review worklist is needed, `raw_candidates.jsonl` when multiple file-review results are aggregated, `dedupe_report.md` and `deduped_candidates.jsonl` when cross-file dedupe is needed, and per-finding `05_findings/<candidate_id>/candidate_ledger.jsonl`.
 
 ## Seed Research
@@ -55,8 +55,10 @@ The parent agent must reconcile validation and attack-path subagent outputs befo
 
 ## Scoped Deep Review
 
+The legacy ranking helpers have been removed upstream: `make-repo-rank-input`, `select-deep-review-input`, `make-rank-shards`, `validate-rank-shard`, `merge-rank-outputs`, `make-rank-pool-plan`, `validate-rank-worker`, and `validate-rank-pool`. Use `generate_rank_input.py make-repo-scope-input --repo <repo_root> --scopes-file <scopes_json> --out <output_jsonl>` for explicit repository scopes. Diff scans retain `make-diff-rank-input` and the carried `copy_deep_review_input.py` as shown below, with their existing arguments and worklist formats.
+
 - Use `deep_review_input.jsonl` as the canonical changed-file review worklist for diff scans.
-- For diff-scoped scans, generate `rank_input.jsonl` deterministically from changed source-like files with `<python_command> $CXSEC_HOME/scripts/generate_rank_input.py make-diff-rank-input --repo <repo_root> --base <base> --mode revisions --head <head> --out <discovery_dir>/rank_input.jsonl` for PR, commit, and branch diffs, or `<python_command> $CXSEC_HOME/scripts/generate_rank_input.py make-diff-rank-input --repo <repo_root> --base <base> --mode local-patch --out <discovery_dir>/rank_input.jsonl` for a local patch, then copy every row into `deep_review_input.jsonl` with `<python_command> $CXSEC_HOME/scripts/generate_rank_input.py copy-deep-review-input --rank-input <discovery_dir>/rank_input.jsonl --out <discovery_dir>/deep_review_input.jsonl`.
+- For diff-scoped scans, generate `rank_input.jsonl` deterministically from changed text files regardless of filename, extension, or directory, with `<python_command> $CXSEC_HOME/scripts/generate_rank_input.py make-diff-rank-input --repo <repo_root> --base <base> --mode revisions --head <head> --out <discovery_dir>/rank_input.jsonl` for PR, commit, and branch diffs, or `<python_command> $CXSEC_HOME/scripts/generate_rank_input.py make-diff-rank-input --repo <repo_root> --base <base> --mode local-patch --out <discovery_dir>/rank_input.jsonl` for a local patch, then copy every row into `deep_review_input.jsonl` with `<python_command> $CXSEC_HOME/scripts/copy_deep_review_input.py --rank-input <discovery_dir>/rank_input.jsonl --out <discovery_dir>/deep_review_input.jsonl`.
 - Diff-scoped scans do not rank or drop changed files before deep review. Every row in diff `rank_input.jsonl` must be copied into `deep_review_input.jsonl` and receive a full-file review receipt.
 - Add directly supporting files required to understand the changed security behavior only when repository evidence shows they are needed; record the add-back reason in the work ledger or per-file result.
 - Deep-review every file selected into `deep_review_input.jsonl`.
