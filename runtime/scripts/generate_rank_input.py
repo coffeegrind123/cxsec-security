@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate and post-process Codex Security scan worklists.
+"""Generate deterministic security-scan worklists.
 
 This script stays deliberately model-free:
 
@@ -12,11 +12,28 @@ Candidate selection uses repository scope, native tool ignore rules, and binary 
 not filename or directory classifications. Diff inputs use bounded source previews.
 """
 
+# Upstream deleted generate_rank_input.py in 0.7.0 (05cceee24, "run inventory and
+# ranking helpers in Node") and moved these two subcommands into its TypeScript MCP
+# launcher (`--helper make-repo-scope-input` / `--helper make-diff-rank-input`,
+# implemented in mcp-app/src/helpers/generate-inventory.ts and inventory-git.ts),
+# which this port does not vendor. This carried copy is the last upstream Python
+# version brought in line with that implementation:
+#   - Git runs through the vendored trusted, sanitised workbench_target.git_command.
+#   - A changed working file that is no longer a regular file is skipped instead of
+#     being emitted with an empty preview; one reached through a directory link is
+#     kept without a preview.
+#   - Committed blobs and working files share one sampler: binary content is detected
+#     across every byte, previews come from the first 64 KiB.
+#   - Rows are de-duplicated by path and sorted by code point; --preview-bytes must be
+#     a plain integer (zero or negative yields empty previews).
+# The other subcommands upstream retired earlier stay retired here. The CLI is unchanged.
+
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from collections.abc import Iterable
@@ -24,25 +41,30 @@ from pathlib import Path
 
 # Some plugin hosts launch Python with safe-path isolation enabled.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from generate_in_scope_files import windows_stream_component
-from rank_preview import (
-    DEFAULT_PREVIEW_BYTES,
-    is_binary_file,
-    preview_for,
-    preview_for_bytes,
+from generate_in_scope_files import (
+    InventoryError,
+    changed_paths,
+    contained,
+    diff_samples,
+    regular,
+    windows_stream_component,
 )
-from workbench_target import (
-    SOURCE_METADATA_DIRECTORIES,
-    git_blob_samples,
-    git_command,
-    git_directory_snapshot_paths,
-)
+from rank_preview import DEFAULT_PREVIEW_BYTES, preview_for_bytes, sample_file
+from workbench_target import SOURCE_METADATA_DIRECTORIES, git_directory_snapshot_paths
 
 JsonRow = dict[str, object]
+INTEGER = re.compile(r"[+-]?[0-9]+")
+
+
+def preview_bytes(value: str) -> int:
+    text = value.strip()
+    if not INTEGER.fullmatch(text):
+        raise argparse.ArgumentTypeError("--preview-bytes must be an integer")
+    return int(text)
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Codex Security scan worklist helper.")
+    parser = argparse.ArgumentParser(description="Security scan worklist helper.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     scoped = subparsers.add_parser(
@@ -74,7 +96,7 @@ def parse_args() -> argparse.Namespace:
     diff.add_argument("--area", default="diff", help="Area label for changed-file rows.")
     diff.add_argument(
         "--preview-bytes",
-        type=int,
+        type=preview_bytes,
         default=DEFAULT_PREVIEW_BYTES,
         help=f"Maximum UTF-8 bytes in each preview. Defaults to {DEFAULT_PREVIEW_BYTES}.",
     )
@@ -82,22 +104,39 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def resolve_repo(value: str) -> Path:
+    try:
+        repo = Path(value).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise SystemExit(f"Repo path not found: {Path(value).expanduser()}")
+    if not repo.is_dir():
+        raise SystemExit(f"Repo path not found: {repo}")
+    return repo
+
+
+def lexical_path(path: str) -> str:
+    """Drop empty and '.' components without collapsing symlink-sensitive '..'."""
+    prefix = "//" if path.startswith("//") and not path.startswith("///") else "/" if path.startswith("/") else ""
+    return prefix + "/".join(part for part in path.split("/") if part and part != ".") or "."
+
+
 def resolve_scope(repo: Path, scope: str) -> Path:
-    scope_path = Path(scope)
+    """Resolve an explicit scope literally: no home expansion, no globbing."""
+    scope_path = Path(lexical_path(scope) if os.name != "nt" else scope)
     stream = windows_stream_component(scope_path)
     if stream is not None:
         raise SystemExit(f"Scope must not use an NTFS alternate data stream: {stream}")
     if not scope_path.is_absolute():
         scope_path = repo / scope_path
-    repository = repo.resolve()
     try:
-        relative = scope_path.relative_to(repository)
+        relative = scope_path.relative_to(repo)
     except ValueError as exc:
         raise SystemExit(f"Scope must be inside repo: {scope_path}") from exc
-    ancestor = repository
+    # Do not normalise away a link before checking link/.. scopes.
+    ancestor = repo
     for part in relative.parts:
         if part == "..":
-            if ancestor == repository:
+            if ancestor == repo:
                 raise SystemExit(f"Scope must be inside repo: {scope_path}")
             ancestor = ancestor.parent
             continue
@@ -108,10 +147,12 @@ def resolve_scope(repo: Path, scope: str) -> Path:
             raise SystemExit(f"Scope path not found: {ancestor}") from exc
         if ancestor.is_symlink() or getattr(metadata, "st_reparse_tag", 0) & 0x20000000:
             raise SystemExit(f"Requested scope must not contain symbolic links: {ancestor}")
-    scope_path = scope_path.resolve()
-    repo_resolved = repo.resolve()
     try:
-        scope_path.relative_to(repo_resolved)
+        scope_path = scope_path.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise SystemExit(f"Scope path not found: {scope_path}") from exc
+    try:
+        scope_path.relative_to(repo)
     except ValueError as exc:
         raise SystemExit(f"Scope must be inside repo: {scope_path}") from exc
     if not scope_path.is_dir() and not scope_path.is_file():
@@ -121,10 +162,11 @@ def resolve_scope(repo: Path, scope: str) -> Path:
 
 def write_jsonl(output: Path, rows: list[JsonRow]) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
-    with output.open("w", encoding="utf-8") as handle:
+    with output.open("w", encoding="utf-8", errors="surrogateescape", newline="") as handle:
         for row in rows:
+            # ensure_ascii escapes DEL, every non-ASCII unit and U+2028/U+2029.
             handle.write(json.dumps(row, ensure_ascii=True, separators=(",", ":")))
-            handle.write("\n")
+            handle.write("\r\n" if os.name == "nt" else "\n")
 
 
 def load_scopes_file(scopes_file: Path) -> list[str]:
@@ -166,7 +208,7 @@ def scope_candidates(repo: Path, scope_path: Path) -> Iterable[Path]:
         "--glob",
         "!**/{.git,.svn}/**",
         "--",
-        str(scope_path.relative_to(repo)),
+        scope_path.relative_to(repo).as_posix() or ".",
     ]
     try:
         result = subprocess.run(command, cwd=repo, capture_output=True, check=False)
@@ -174,7 +216,7 @@ def scope_candidates(repo: Path, scope_path: Path) -> Iterable[Path]:
         ignore_names = (".gitignore", ".ignore", ".rgignore")
         ancestors = (scope_path, *scope_path.parents)
         has_ignore_rules = (
-            any((ancestor / ".git").exists() for ancestor in (repo, *repo.parents))
+            any(os.path.lexists(ancestor / ".git") for ancestor in (repo, *repo.parents))
             or any(
                 (ancestor / name).is_file()
                 for ancestor in ancestors
@@ -191,146 +233,63 @@ def scope_candidates(repo: Path, scope_path: Path) -> Iterable[Path]:
 
     if result.returncode not in (0, 1):
         detail = result.stderr.decode("utf-8", errors="replace").strip()
-        raise SystemExit(f"Could not enumerate scoped repository files: {detail}")
+        signal_note = f" (signal {-result.returncode})" if result.returncode < 0 else ""
+        raise SystemExit(f"Could not enumerate scoped repository files{signal_note}: {detail}")
     return (repo / os.fsdecode(path) for path in result.stdout.split(b"\0") if path)
 
 
 def make_repo_scope_input(args: argparse.Namespace) -> None:
-    repo = Path(args.repo).expanduser().resolve()
-    if not repo.is_dir():
-        raise SystemExit(f"Repo path not found: {repo}")
-
+    repo = resolve_repo(args.repo)
     scopes = load_scopes_file(Path(args.scopes_file).expanduser())
+    resolved = [resolve_scope(repo, scope) for scope in scopes]
     rows_by_path: dict[str, JsonRow] = {}
-    for scope in scopes:
-        scope_path = resolve_scope(repo, scope)
-        candidates = scope_candidates(repo, scope_path)
-        for path in candidates:
+    for scope_path in resolved:
+        for path in scope_candidates(repo, scope_path):
             try:
                 if path.is_symlink() or not path.is_file():
                     continue
                 relative = path.resolve(strict=True).relative_to(repo)
-            except (OSError, ValueError):
+            except (OSError, RuntimeError, ValueError):
                 continue
             if not SOURCE_METADATA_DIRECTORIES.isdisjoint(relative.parts):
                 continue
             rows_by_path.setdefault(relative.as_posix(), {"path": relative.as_posix()})
 
-    rows = sorted(rows_by_path.values(), key=lambda row: str(row["path"]))
+    rows = [rows_by_path[name] for name in sorted(rows_by_path)]
     output = Path(args.out).expanduser()
     write_jsonl(output, rows)
     print(f"Wrote {len(rows)} scoped paths to {output}")
 
 
-def run_git_changed_paths(repo: Path, diff_args: list[str]) -> list[tuple[Path, str]]:
-    """Return changed regular files from the selected side of each change."""
-    result = git_command(
-        repo,
-        "diff",
-        "--ignore-submodules=all",
-        "--raw",
-        "-z",
-        "--diff-filter=ACMRDT",
-        *diff_args,
-        "--",
-        text=False,
-    )
-    result.check_returncode()
-    fields = result.stdout.split(b"\0")
-    if fields and not fields[-1]:
-        fields.pop()
-
-    changed: list[tuple[Path, str]] = []
-    index = 0
-    while index < len(fields):
-        metadata = fields[index].split()
-        status = chr(metadata[-1][0])
-        index += 1
-        if status in {"C", "R"}:
-            index += 1
-        path = repo / os.fsdecode(fields[index])
-        index += 1
-        selected_mode = metadata[0].removeprefix(b":") if status == "D" else metadata[1]
-        if selected_mode.startswith(b"100"):
-            changed.append((path, status))
-    return changed
-
-
-def git_changed_paths(repo: Path, base: str, head: str, mode: str) -> list[tuple[Path, str]]:
-    if mode == "revisions":
-        return run_git_changed_paths(repo, [f"{base}..{head}"])
-    if mode == "local-patch":
-        unstaged = run_git_changed_paths(repo, [base])
-        staged = run_git_changed_paths(repo, ["--cached", base])
-        untracked = git_command(
-            repo,
-            "ls-files",
-            "--others",
-            "--exclude-standard",
-            "-z",
-            text=False,
-        )
-        untracked.check_returncode()
-        combined = dict(staged)
-        combined.update(unstaged)
-        combined.update(
-            (repo / os.fsdecode(relative), "A")
-            for relative in untracked.stdout.split(b"\0")
-            if relative and not relative.endswith(b"/")
-        )
-        return sorted(
-            (path, status)
-            for path, status in combined.items()
-            if SOURCE_METADATA_DIRECTORIES.isdisjoint(path.relative_to(repo).parts)
-            and (status == "D" or (not path.is_symlink() and path.is_file()))
-        )
-    raise SystemExit(f"Unknown diff mode: {mode}")
-
-
 def make_diff_rank_input(args: argparse.Namespace) -> None:
-    repo = Path(args.repo).expanduser().resolve()
-    if not repo.is_dir():
-        raise SystemExit(f"Repo path not found: {repo}")
+    repo = resolve_repo(args.repo)
+    try:
+        changes = changed_paths(repo, args.base, args.head, args.mode)
+        samples = diff_samples(repo, args.base, args.head, args.mode, changes)
+    except InventoryError as error:
+        raise SystemExit(str(error)) from error
 
-    changed = git_changed_paths(repo, args.base, args.head, args.mode)
-    revision_refs = {
-        path.relative_to(repo): (
-            f"{args.base if status == 'D' else args.head}:{path.relative_to(repo).as_posix()}"
-        )
-        for path, status in changed
-        if args.mode == "revisions" or status == "D"
-    }
-    revision_samples = dict(
-        zip(revision_refs, git_blob_samples(repo, list(revision_refs.values())))
-    )
-
-    rows: list[JsonRow] = []
-    for path, status in changed:
-        rel = path.relative_to(repo)
-
+    rows_by_path: dict[str, JsonRow] = {}
+    for name, status in changes:
         preview = ""
-        if args.mode == "revisions" or status == "D":
-            sample = revision_samples[rel]
-            if sample is None:
-                revision = args.base if status == "D" else args.head
-                raise SystemExit(f"Unable to read committed diff blob: {revision}:{rel.as_posix()}")
-            content, is_binary = sample
+        if name in samples:
+            content, is_binary = samples[name]
             if is_binary:
                 continue
             if status != "D":
                 preview, _ = preview_for_bytes(content, args.preview_bytes)
-        elif not path.is_symlink() and path.is_file():
-            try:
-                path.resolve(strict=True).relative_to(repo)
-            except (OSError, ValueError):
-                preview = ""
-            else:
-                preview, is_binary = preview_for(path, args.preview_bytes)
-                if is_binary or is_binary_file(path):
+        else:
+            path = repo / name
+            if not regular(path):
+                continue
+            if contained(repo, path):
+                content, is_binary = sample_file(path)
+                if is_binary:
                     continue
-        rows.append({"path": rel.as_posix(), "area": args.area, "preview": preview})
+                preview, _ = preview_for_bytes(content, args.preview_bytes)
+        rows_by_path[name] = {"path": name, "area": args.area, "preview": preview}
 
-    rows.sort(key=lambda row: str(row["path"]))
+    rows = [rows_by_path[name] for name in sorted(rows_by_path)]
     output = Path(args.out).expanduser()
     write_jsonl(output, rows)
     print(f"Wrote {len(rows)} rows to {output}")

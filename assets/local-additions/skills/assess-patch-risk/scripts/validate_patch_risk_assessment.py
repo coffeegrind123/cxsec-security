@@ -73,7 +73,8 @@ def read_object(path: str) -> dict[str, Any]:
             # Keep undecodable stdin bytes distinct from U+FFFD.
             text = sys.stdin.buffer.read().decode("utf-8", "surrogateescape")
         else:
-            text = Path(path).read_text(encoding="utf-8")
+            # A file may start with a UTF-8 byte-order mark; stdin keeps its bytes.
+            text = Path(path).read_text(encoding="utf-8").removeprefix("\ufeff")
         value = json.loads(
             text, object_pairs_hook=reject_duplicate_keys, parse_constant=reject_non_finite
         )

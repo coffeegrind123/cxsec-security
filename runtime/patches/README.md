@@ -57,11 +57,19 @@ current TypeScript test suite, ported to pytest under the skill repo's `tests/`.
 | `scripts/resolve_security_md.py` | 0.1.28 (`--helper resolve-security-md`) | modes 1–3 policy chain, mode 7, `security-guidance.md` |
 | `scripts/normalize_candidates.py` | 0.2.0 (`--helper normalize-candidates`) | mode 2 discovery (`workbench-file-protocol.md`) |
 | `scripts/copy_deep_review_input.py` | 0.3.0 (`--helper copy-deep-review-input`) | mode 2 worklist (`phase-2-discovery.md`, `scan-artifacts-and-ledger.md`) |
-| `scripts/bind_repo_scopes.py` | 0.3.0 (`--helper bind-repo-scopes`) | mode 1 scoped-path binding |
+| `scripts/bind_repo_scopes.py` | 0.3.0 (`--helper bind-repo-scopes`) | mode 1 scoped-path binding (manifest only since 0.9.x; `--coverage` is rejected) |
+| `scripts/generate_in_scope_files.py` | 0.7.0 (`--helper generate-in-scope-files`) | modes 1 and 3 inventory |
+| `scripts/generate_rank_input.py` | 0.7.0 (`--helper make-repo-scope-input`, `make-diff-rank-input`) | mode 1 scoped paths, mode 2 worklist |
+| `scripts/rank_preview.py` | 0.7.0 (`source-preview.ts`) | imported by the two inventory helpers |
+| `scripts/validate_tracking_source.py` | 0.9.0 (`--helper validate-tracking-source`) | mode 8 source validation |
 | `skills/assess-patch-risk/scripts/validate_patch_risk_assessment.py` | 0.3.0 (`--helper validate-patch-risk-assessment`) | mode 10 |
 
-The two worklist helpers were subcommands of `generate_rank_input.py`; they are
-separate scripts here with the same flags. The patch-risk validator stays at its
+`copy_deep_review_input.py` and `bind_repo_scopes.py` were subcommands of
+`generate_rank_input.py`; they are separate scripts here with the same flags.
+The inventory helpers run Git only through the vendored
+`workbench_target.git_command` (trusted executable, sanitized environment), and
+`validate_tracking_source.py` delegates the bundle check to the vendored
+`validate_scan_contract.py`, which upstream's TypeScript tracking reader mirrors. The patch-risk validator stays at its
 upstream depth because it resolves the plugin root as `parents[3]`, and it uses the
 vendored finalizer's private `_validate_schema_node` to match the TypeScript
 schema checks exactly (a trailing `$` in a pattern must not match before a final

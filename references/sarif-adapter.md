@@ -1,6 +1,6 @@
 # SARIF Adapter
 
-SARIF is a deterministic export, not the source of truth.
+Use SARIF to send saved findings to a code scanning tool. Keep the sealed scan bundle (`scan-contract.md`, Canonical Documents) for complete finding records.
 
 The adapter:
 
@@ -23,7 +23,14 @@ Lifecycle, rich validation evidence, attack-path context, and coverage are lossy
 
 SARIF `executionSuccessful` reflects whether the scan reached a successful terminal status. Stopped scans retain findings and include their concrete limitations as warnings. Coverage describes scope and follow-up work; neither successful execution nor an empty finding set certifies exhaustive review.
 
-Automatic SARIF export during finalization is best-effort so projection errors cannot invalidate a canonical seal. Use the strict adapter entry point when a consumer requires SARIF and should surface export errors.
+When your pipeline requires SARIF, export it explicitly from the sealed scan and check the exit status. The command writes the file on success and exits non-zero (`2`) on an export error. The scan remains available if automatic SARIF generation failed during finalization.
+
+```bash
+python3 $CXSEC_HOME/scripts/finalize_scan_contract.py --scan-dir <scan_dir> \
+  --export-format sarif --export-output results.sarif
+```
+
+Optional `scan.warnings` messages appear in SARIF `toolExecutionNotifications`; they do not change `executionSuccessful`. In this port, deferred-task reasons do not survive sealing (the sealed manifest keeps only `scan.review.excludedPaths`), so the export cannot list them: when SARIF consumers must see unfinished work, add one concise `scan.warnings` entry per material deferred task in the draft before finalizing.
 
 References:
 

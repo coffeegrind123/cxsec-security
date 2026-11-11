@@ -41,7 +41,9 @@ End each repository-scoped threat model with these two lines:
 
 ### Deep Rounds And Compact Diff Discovery
 
-A repository scan writes its findings and coverage straight into the unsealed canonical files. A deep scan runs complete repository-scan rounds; each round checkpoints as it works and returns its final validated findings, coverage, threat model, and optional scope as `result.json`. Pending candidates retain their original evidence in `coverage.deferred`. A checkpoint alone is never an accepted complete round result. The coordinator semantically reduces the completed round results and writes the parent scan's unsealed `scan-manifest.json`, `findings.json`, and `coverage.json`; it does not rerun validation or attack-path phases or author a second draft. Diff scans retain the compact artifacts described below.
+A repository scan writes its findings and review state straight into the unsealed canonical files (`findings.json`, and `scan.reviewState` in `scan-manifest.json`). A deep scan runs complete repository-scan rounds. Each round saves findings and pending review work in its checkpoint as it works, then returns its final validated findings, review state, threat model, and optional scope as `result.json`. Pending candidates keep their original evidence in `reviewState.deferred`. A checkpoint alone is never an accepted complete round result.
+
+After each batch of rounds the coordinator compares the repairs described in the reports. It checks disputed pairs that share an assigned repair, or cite overlapping code when a repair could not be assigned. It merges such a pair only when one narrow edit covers both reports in full and each supplies supporting code. A finding with an additional faulty operation or insufficient evidence stays separate. Each original finding and its citations stay in the retained union. The coordinator records comparison failures and keeps unresolved reports. It writes the parent's unsealed `scan-manifest.json` and `findings.json` with the accepted results and their review state; it does not rerun validation or attack-path phases or author a second draft. If the time limit arrives before a round finishes, the parent retains the reason and any saved findings or pending review. See `scan-contract.md` for field definitions. Diff scans retain the compact artifacts described below.
 
 - A diff scan writes raw candidates to `<discovery_dir>/raw_candidates.jsonl` and normalizes them once into `<discovery_dir>/candidates.jsonl` with `normalize_candidates.py`; read the normalized set from that file.
   - Normalization validates candidates against assigned source paths, merges rows with the same CWE ids, locations, and optional instance, preserves their text, and assigns deterministic `candidate_id` values.
@@ -96,16 +98,27 @@ Repository scans and deep-scan rounds include attack-path analysis directly in t
 
 ## Final Report Paths
 
-- Unsealed canonical draft: `<scan_dir>/scan-manifest.json`, `<scan_dir>/findings.json`, `<scan_dir>/coverage.json`
-- Deep round result: `<discovery_dir>/rounds/round-<k>/result.json`; the coordinator writes the aggregated parent draft
-- In-flight checkpoint: `<scan_dir>/checkpoint-findings.json` and `<discovery_dir>/worker-<label>.json`
-- Completed results: the sealed `<scan_dir>/scan-manifest.json` plus the generated `<scan_dir>/report.md`
-- Final scan report: `<scan_dir>/report.md`
-- Detailed vulnerability write-up: `<scan_dir>/findings/<slug>/<slug>.md`
-- Per-finding PoC and supporting files: `<scan_dir>/findings/<slug>/poc/...`
-- Structural hardening portfolio: `<scan_dir>/hardening/hardening.md`
-- Hardening analysis, proposals, and diagrams: `<scan_dir>/hardening/...`
-- Final report validation notes, when validation fails: `<scan_dir>/report_validation.md`
+All paths below are relative to the scan directory.
+
+| Output | Path |
+| --- | --- |
+| Canonical scan receipt and findings | `scan-manifest.json` and `findings.json` |
+| Readable report | `report.md` |
+| Threat model, when recorded | `threatmodel.md` |
+| Optional detailed finding write-up and supporting files | `findings/<slug>/<slug>.md` and `findings/<slug>/poc/` |
+| Optional structural hardening portfolio | `hardening/hardening.md` and supporting files under `hardening/` |
+| Report validation notes when validation fails | `report_validation.md` |
+| Legacy coverage document | `coverage.json` only when referenced by the manifest's `scan.coverageRef` |
+| Finalization recovery checkpoint | `checkpoint-head.json` and `checkpoints/<sha256>.json` (written by the finalizer) |
+
+The current manifest stores additional excluded paths in `scan.review.excludedPaths`. See `scan-contract.md` (Canonical Documents and Review state) for the shapes.
+
+### Draft submission and retrieval
+
+- Unsealed canonical draft: `scan-manifest.json` (with `scan.mode` and `scan.reviewState`) and `findings.json`. No `coverage.json`.
+- Deep round result: `artifacts/02_discovery/rounds/round-<k>/result.json` with `findings`, `reviewState`, optional `scope` and `threatModel`; the coordinator writes the aggregated parent draft.
+- In-flight checkpoint: `checkpoint-findings.json` and `artifacts/02_discovery/worker-<label>.json`.
+- Completed results: the sealed `scan-manifest.json` plus the generated `report.md`.
 
 ## Fix Finding Paths
 

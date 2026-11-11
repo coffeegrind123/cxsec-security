@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Copy SDK scoped-path targets into the unsealed manifest and coverage documents."""
+"""Copy SDK scoped-path targets into the unsealed manifest."""
 
 # Upstream retired generate_rank_input.py's bind-repo-scopes subcommand and moved it
 # into its TypeScript MCP launcher (mcp-app/src/helpers/bind-repo-scopes.ts), which
-# this port does not vendor. This carried copy tracks that implementation: both
-# documents are read and checked before either is written, unrelated JSON values
-# (including exact large integers) are preserved, and output is two-space JSON.
+# this port does not vendor. This carried copy tracks that implementation: unrelated
+# JSON values (including exact large integers) are preserved, and output is two-space
+# JSON. Upstream 0.8.0 dropped coverage.json from new scans and with it the
+# --coverage option: only the manifest's scan.scope.includePaths is bound, and it is
+# read and checked before it is written.
 
 from __future__ import annotations
 
@@ -56,20 +58,15 @@ def load_scopes(path: Path) -> list[str]:
     return scopes
 
 
-def load_contract(manifest_path: Path, coverage_path: Path) -> tuple[dict, dict]:
+def load_manifest(manifest_path: Path) -> dict:
     try:
         manifest = read_json(manifest_path)
-        coverage = read_json(coverage_path)
     except (OSError, ValueError, RecursionError) as error:
         raise ValueError(BIND_FAILED) from error
     scan = manifest.get("scan") if isinstance(manifest, dict) else None
-    if (
-        not isinstance(coverage, dict)
-        or not isinstance(scan, dict)
-        or not isinstance(scan.get("scope"), dict)
-    ):
+    if not isinstance(scan, dict) or not isinstance(scan.get("scope"), dict):
         raise ValueError(BIND_FAILED)
-    return manifest, coverage
+    return manifest
 
 
 def main() -> int:
@@ -78,18 +75,14 @@ def main() -> int:
     )
     parser.add_argument("--scopes-file", required=True, metavar="PATH")
     parser.add_argument("--manifest", required=True, metavar="PATH")
-    parser.add_argument("--coverage", required=True, metavar="PATH")
     args = parser.parse_args()
     try:
         scopes = load_scopes(Path(args.scopes_file).expanduser())
         manifest_path = Path(args.manifest).expanduser()
-        coverage_path = Path(args.coverage).expanduser()
-        manifest, coverage = load_contract(manifest_path, coverage_path)
+        manifest = load_manifest(manifest_path)
         manifest["scan"]["scope"]["includePaths"] = scopes
-        coverage["includePaths"] = scopes
-        for path, value in ((manifest_path, manifest), (coverage_path, coverage)):
-            with path.open("w", encoding="utf-8", newline="") as handle:
-                handle.write(stringify(value) + "\n")
+        with manifest_path.open("w", encoding="utf-8", newline="") as handle:
+            handle.write(stringify(manifest) + "\n")
     except ValueError as error:
         print(error, file=sys.stderr)
         return 1

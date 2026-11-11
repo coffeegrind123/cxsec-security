@@ -1,9 +1,10 @@
 """Carried validate_patch_risk_assessment.py, held to upstream's current TypeScript contract.
 
-Ported from openai/codex-security 0.6.0:
+Ported from openai/codex-security 0.9.1 (originally 0.6.0):
   sdk/typescript/tests-ts/patch-risk-contract.test.ts
   plugins/codex-security/mcp-app/src/helpers/validate-patch-risk-assessment.ts
-The validator runs from the bundled runtime copy so PLUGIN_ROOT resolves to runtime/.
+The validator runs from an assembled plugin root (runtime/ plus the carried copy, see
+conftest.py) so it resolves the schemas at its installed depth.
 Omitted upstream cases, all Windows- or launcher-specific:
   - "executes the documented PowerShell command with {absolute,relative,unc} literal
     assessment and plugin paths": drives the Windows launcher fixture and PowerShell.
@@ -31,6 +32,15 @@ SKILL_ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_ROOT = SKILL_ROOT / "runtime"
 SCRIPT = PLUGIN_ROOT / "skills" / "assess-patch-risk" / "scripts" / "validate_patch_risk_assessment.py"
 SCHEMA_PATH = PLUGIN_ROOT / "schemas" / "patch-risk-assessment.schema.json"
+
+
+@pytest.fixture(autouse=True)
+def _carried_validator(plugin_root: Path) -> None:
+    # Validate the carried copy (assets/local-additions) at its installed depth.
+    global PLUGIN_ROOT, SCRIPT, SCHEMA_PATH
+    PLUGIN_ROOT = plugin_root
+    SCRIPT = plugin_root / "skills" / "assess-patch-risk" / "scripts" / "validate_patch_risk_assessment.py"
+    SCHEMA_PATH = plugin_root / "schemas" / "patch-risk-assessment.schema.json"
 POSIX = sys.platform != "win32"
 NON_APPLICABLE = ["no_live_effect", "wrong_owner", "duplicate", "superseded"]
 CONTROLS = [("\x1b", "\\u001b"), ("‮", "\\u202e"), ("\U000e0001", "\\u{e0001}")]
@@ -622,3 +632,12 @@ def test_escapes_terminal_controls_in_schema_diagnostics() -> None:
     assert result.status == 1
     assert "patch-risk-assessment.schema/\\u001b[2J: unexpected schema property" in result.stderr
     assert "\x1b" not in result.stderr
+
+
+def test_accepts_a_utf8_byte_order_mark_in_an_assessment_file(tmp_path: Path) -> None:
+    path = tmp_path / "assessment.json"
+    write(path, b"\xef\xbb\xbf" + serialize(assessment()).replace("\n", "\r\n").encode("utf-8"))
+    result = subprocess.run(
+        [sys.executable, "-I", str(SCRIPT), str(path)], capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr

@@ -1,6 +1,6 @@
 """Carried normalize_candidates.py, held to upstream's current TypeScript contract.
 
-Ported from openai/codex-security 0.6.0:
+Ported from openai/codex-security 0.9.1 (originally 0.6.0):
   sdk/typescript/tests-ts/candidate-normalizer.test.ts
   plugins/codex-security/mcp-app/tests/test_normalize_candidates.ts
 Launcher- and Node-specific cases (packaged launcher argv, Node 20 decoder) have no
@@ -547,3 +547,37 @@ def test_rejects_abbreviated_long_options(f: Fixture) -> None:
         text=True,
     )
     assert result.returncode == 2
+
+
+@pytest.mark.skipif(not POSIX, reason="POSIX rename failure injection")
+def test_retains_the_output_error_when_temporary_cleanup_also_fails(tmp_path: Path) -> None:
+    f = Fixture(tmp_path)
+    source = tmp_path / "candidates.jsonl"
+    write(source, json.dumps(candidate()) + "\n")
+    wrapper = tmp_path / "fail_filesystem.py"
+    wrapper.write_text(
+        "import pathlib, runpy, sys\n"
+        "def replace(self, target):\n"
+        "    raise OSError('Synthetic output rename failed')\n"
+        "def unlink(self, missing_ok=False):\n"
+        "    raise OSError('Synthetic temporary unlink failed\\x1b\\x9b')\n"
+        "pathlib.Path.replace = replace\n"
+        "pathlib.Path.unlink = unlink\n"
+        "sys.argv = sys.argv[1:]\n"
+        "runpy.run_path(sys.argv[0], run_name='__main__')\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [
+            sys.executable, "-I", str(wrapper), str(SCRIPT),
+            "--input", str(source), "--out", str(f.output),
+            "--repo-root", str(f.repo), "--in-scope-files", str(f.scope),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "Synthetic output rename failed" in result.stderr
+    assert "Synthetic temporary unlink failed" in result.stderr
+    assert "\x1b" not in result.stderr and "\x9b" not in result.stderr
+    assert not f.output.exists()

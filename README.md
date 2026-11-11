@@ -41,7 +41,7 @@ stdlib-only and makes no network calls. Filing findings (mode 8) and GitHub
 finding intake (mode 4) additionally need authenticated `gh`, or a connected MCP
 server exposing GitHub, Linear, or Atlassian/Jira tools.
 
-## The ten modes
+## The thirteen modes
 
 `SKILL.md` is a router. It picks one mode, reads only that mode's reference file,
 and follows it.
@@ -58,6 +58,9 @@ and follows it.
 | 8 | Track | File findings as Linear/Jira/GitHub issues or a draft GitHub advisory. |
 | 9 | Harden | Structural change beyond per-finding patches, with tradeoffs and a migration plan. |
 | 10 | Patch risk | How risky a specific patch, PR diff, or commit range is to *merge*. Read-only. |
+| 11 | Skill review | Check an agent skill file, bundle, or collection before installing or using it. Read-only. |
+| 12 | Dependency alert | Trace a vulnerable dependency from an alert, advisory, or SBOM match and decide whether it can be upgraded. |
+| 13 | Threat-model visualize | Turn an existing threat model into an offline interactive architecture and threat-path explorer. |
 
 Modes 1 and 3 run one self-contained audit (`references/core-scan.md`): an
 independent baseline auditor plus focused investigators, validated and reconciled
@@ -84,8 +87,8 @@ resolves schemas as `<script_parent>/../schemas`.
 
 ```
 SKILL.md                  router: mode selection, standing rules, reference map
-references/               40 files, loaded on demand
-  mode-*.md               the ten modes
+references/               43 files, loaded on demand
+  mode-*.md               the thirteen modes
   core-scan.md            the audit engine for modes 1 and 3
   phase-*.md              the four phases of the diff scan
   workbench-file-protocol.md   file-based replacement for every upstream MCP tool
@@ -102,8 +105,9 @@ The upstream MCP server (`mcp-app/`) and the Codex-CLI-driven
 `deep-security-scan` coordinator. `references/workbench-file-protocol.md` is the
 authoritative mapping from every upstream MCP tool to its file-based replacement,
 and it is required reading before any scan mode. The Codex-desktop-only
-`desktop-scan.md`, the ChatGPT access advisory, and the `publish-findings` and
-`cloud-findings` skills (which need the `codex-security` CLI or Codex Security
+`desktop-scan.md`, the ChatGPT access advisory, the Windows launcher validation note, and the
+`publish-findings` skill with its Checkmarx and Wiz importers and the
+`cloud-findings` skill (which need the `codex-security` CLI or Codex Security
 Cloud) have no equivalent here and are not ported. Helpers upstream moved into its
 TypeScript launcher are carried as Python under `assets/local-additions/`, held to
 upstream's current test suites by `tests/` (`python3 -m pytest tests/`).

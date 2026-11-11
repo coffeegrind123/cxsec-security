@@ -1,6 +1,6 @@
 ---
 name: cxsec-security
-description: Application security review toolkit — scan a repository, PR, commit, branch diff, or working-tree patch for vulnerabilities; run a deep multi-pass scan; triage findings you already have from SARIF/CVEs/advisories/scanner tickets; fix and verify a finding; assess how risky a patch is to merge; write a disclosure report; author or review a SECURITY.md; file findings as Linear/Jira/GitHub issues or a GitHub security advisory; or propose structural security hardening. Use for security audits, vulnerability hunting, appsec review, threat modeling, attack-path and severity analysis, exploitability triage, security regression review of a change set, and CWE/CVSS-grounded reporting with SARIF output. Triggered by requests like 'audit this repo for vulnerabilities', 'security review this PR', 'run a deep scan', 'is this CVE exploitable here', 'triage this SARIF', 'fix and verify this finding', 'is this patch safe to merge', 'write this up for disclosure', 'draft a SECURITY.md', 'file these findings in Linear'.
+description: Application security review toolkit — scan a repo, PR, commit, branch diff, or working-tree patch for vulnerabilities; run a deep multi-pass scan; triage existing findings (SARIF, CVEs, advisories, scanner tickets); fix and verify a finding; assess patch merge risk; write a disclosure report; author or review SECURITY.md; file findings as Linear/Jira/GitHub issues or a GitHub advisory; propose structural hardening; review an agent skill before install; resolve a vulnerable-dependency alert; visualize a threat model. Use for security audits, appsec review, threat modeling, and CWE/CVSS-grounded SARIF reporting. Triggers: 'audit this repo for vulnerabilities', 'security review this PR', 'run a deep scan', 'is this CVE exploitable here', 'triage this SARIF', 'fix and verify this finding', 'is this patch safe to merge', 'write this up for disclosure', 'draft a SECURITY.md', 'file these in Linear', 'is this skill safe', 'can we upgrade this vulnerable dependency', 'visualize the threat model'.
 license: Apache-2.0
 compatibility: Requires python3 3.11+ and the vendored codex-security runtime at $CXSEC_HOME (default ~/.claude/codex-security), with scripts/ and schemas/ as siblings. Run scripts/install.sh to install or verify it. Modes 4 and 8 also need gh or a connected GitHub/Linear/Atlassian MCP server. Scanning makes no network calls.
 allowed-tools: Bash(~/.claude/skills/cxsec-security/scripts/install.sh:*) Read Write Edit Glob Grep Task Agent AskUserQuestion TodoWrite WebFetch mcp__linear__* mcp__atlassian__* Bash(python3:*) Bash(python:*) Bash(git:*) Bash(gh:*) Bash(rg:*) Bash(grep:*) Bash(find:*) Bash(ls:*) Bash(cat:*) Bash(head:*) Bash(tail:*) Bash(wc:*) Bash(jq:*) Bash(sed:*) Bash(awk:*) Bash(sort:*) Bash(uniq:*) Bash(diff:*) Bash(file:*) Bash(mkdir:*) Bash(cp:*) Bash(sha256sum:*) Bash(date:*) Bash(npm:*) Bash(pnpm:*) Bash(yarn:*) Bash(node:*) Bash(pytest:*) Bash(cargo:*) Bash(go:*) Bash(make:*)
@@ -8,7 +8,7 @@ allowed-tools: Bash(~/.claude/skills/cxsec-security/scripts/install.sh:*) Read W
 
 # Security Review Toolkit
 
-Ten workflows behind one entry point. **Pick the mode first, read only that mode's
+Thirteen workflows behind one entry point. **Pick the mode first, read only that mode's
 file, then follow it.** Do not read every reference — each mode names the further
 files it needs.
 
@@ -29,6 +29,9 @@ column; use it when two modes look close.
 | 8 | **Track** | File findings as Linear/Jira/GitHub issues, or a draft GitHub security advisory. | `references/mode-track.md` |
 | 9 | **Harden** | Structural or architectural improvements beyond per-finding patches; before/after views, tradeoffs, migration plan. | `references/mode-harden.md` |
 | 10 | **Patch risk** | Asked how risky a specific patch, PR diff, or commit range is to *merge* — impact, regression likelihood, test protection, recoverability, auto-merge eligibility. Read-only. | `references/mode-patch-risk.md` |
+| 11 | **Skill review** | Check an agent skill file, bundle, or collection for unsafe instructions, scripts, permissions, or dependencies *before* installing or using it. Read-only. | `references/mode-skill-review.md` |
+| 12 | **Dependency alert** | A vulnerable *dependency* from a scanner alert, advisory, Dependabot, or SBOM match: what pulls it in, which copies are affected, whether and how it can be upgraded. | `references/mode-dependency-alert.md` |
+| 13 | **Threat-model visualize** | Turn an *existing* threat model (a scan's `threatmodel.md` or a supplied one) into an interactive architecture and threat-path explorer. No new assessment. | `references/mode-threat-model-visualize.md` |
 
 ### Disambiguation
 
@@ -51,6 +54,13 @@ column; use it when two modes look close.
   self-contained audit in `references/core-scan.md` instead — no ranked worklists,
   no per-candidate ledgers, no phase fan-out. **Never select a phase file as the
   entry point**: `phase-*.md` files are steps inside a diff scan, not modes.
+- **"Is this dependency CVE a problem / can we upgrade?" → 12, not 4.** Mode 4
+  judges whether a finding is real in the code; mode 12 traces the dependency
+  graph and the upgrade path, and hands any edit to mode 5.
+- **"Is this skill safe to install?" → 11.** Never install, load, or run the
+  target skill to review it.
+- **"Draw / visualize the threat model" → 13.** It reuses an existing threat
+  model; a request to *create* one is a scan (1 or 2).
 - If the request genuinely spans modes (for example "scan this repo and file what
   you find"), run them in sequence and say which you are doing. If the mode is
   ambiguous and the wrong pick would waste substantial work, ask.
@@ -67,7 +77,7 @@ column; use it when two modes look close.
    the capability preflight upstream retired; missing optional tools never block
    source review. A deep scan does not read it.
 
-Modes 4–10 are standalone and do not need a `<scan_dir>` unless the user supplies
+Modes 4–13 are standalone and do not need a `<scan_dir>` unless the user supplies
 one.
 
 ## Runtime
@@ -114,8 +124,10 @@ contains or how findings map into it — never to produce SARIF by hand.
 - Upstream docs invoke `launch_codex_security_mcp --helper <name>`; that launcher
   is not vendored. Use the carried `$CXSEC_HOME/scripts/<name>.py` the mode file
   names instead.
-- Coverage has no `completeness` field; the finalizer silently drops one. Remaining
-  work lives only in `coverage.deferred` and `needs_follow_up` surfaces.
+- New scans write no `coverage.json`: review state goes in the draft manifest's
+  `scan.reviewState` and is sealed to `scan.review`. It has no `completeness`
+  field; remaining work lives only in `reviewState.deferred` and
+  `needs_follow_up` surfaces.
 - Finalization regenerates `report.md`, SARIF, and (when `scan.threatModel` is
   set) `<scan_dir>/threatmodel.md`; hand edits are lost and never feed back into
   the canonical JSON.
@@ -154,7 +166,8 @@ Read on demand; do not preload.
 
 **Modes** — `mode-repo-scan.md`, `mode-diff-scan.md`, `mode-deep-scan.md`,
 `mode-triage.md`, `mode-fix.md`, `mode-writeup.md`, `mode-policy.md`,
-`mode-track.md`, `mode-harden.md`, `mode-patch-risk.md`
+`mode-track.md`, `mode-harden.md`, `mode-patch-risk.md`, `mode-skill-review.md`,
+`mode-dependency-alert.md`, `mode-threat-model-visualize.md`
 
 **Audit engine** (modes 1 and 3) — `core-scan.md`, `threat-model.md`
 

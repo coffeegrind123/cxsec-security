@@ -9,16 +9,22 @@ Apache-2.0. See `PROVENANCE.md` for the exact upstream version and commit.
 **This runtime** (`~/.claude/codex-security`, referred to as `$CXSEC_HOME`):
 
 - `scripts/` — upstream's stdlib-only Python helpers, including the `workbench/`
-  subpackage, plus four carried local additions (`resolve_security_md.py`,
-  `normalize_candidates.py`, `copy_deep_review_input.py`, `bind_repo_scopes.py`).
+  subpackage, plus eight carried local additions (`resolve_security_md.py`,
+  `normalize_candidates.py`, `copy_deep_review_input.py`, `bind_repo_scopes.py`,
+  `generate_in_scope_files.py`, `generate_rank_input.py`, `rank_preview.py`,
+  `validate_tracking_source.py`).
   No pip install, no network calls, no OpenAI credentials. Python 3.11+
   (`tomllib`). The two `.mjs` modules upstream ships here are never run.
 - `schemas/` — 12 JSON Schemas for the scan contract and patch-risk assessment.
 - `references/` — the full upstream shared reference set.
 - `shared/` — workbench migration tables; `workbench_schema.py` reads them as
   `<script_parent>/../shared`, so it must sit beside `scripts/`.
-- `examples/completed-scan/` — upstream example artifacts, used as the installer's
-  end-to-end smoke fixture.
+- `examples/completed-scan/` and `examples/legacy-completed-scan/` — upstream's
+  current and legacy (`coverage.json`) example bundles; the installer finalizes
+  the first and re-validates the second.
+- `skills/threat-model-visualize/` — mode 13's offline explorer builder
+  (`scripts/build_explorer.py`), its HTML/JS/CSS shell (`assets/`), and the
+  view-model and presentation references.
 - `skills/assess-patch-risk/scripts/` — mode 10's assessment validator (carried;
   upstream moved it into its launcher), kept at its upstream depth because it
   resolves the plugin root as `parents[3]`.
@@ -29,7 +35,7 @@ It vendors the pinned upstream tree, re-applies the SARIF rebrand patch, and pro
 the result by finalizing the example scan. See `references/install.md` in the skill.
 
 **One skill** at `~/.claude/skills/cxsec-security/` — a router `SKILL.md` (~2k tok)
-plus 40 on-demand reference files, loaded per mode:
+plus 43 on-demand reference files, loaded per mode:
 
 | # | Mode | Reference |
 |---|---|---|
@@ -43,6 +49,9 @@ plus 40 on-demand reference files, loaded per mode:
 | 8 | File findings (Linear/Jira/GitHub) | `mode-track.md` |
 | 9 | Structural hardening | `mode-harden.md` |
 | 10 | Patch merge-risk assessment | `mode-patch-risk.md` |
+| 11 | Agent skill review | `mode-skill-review.md` |
+| 12 | Vulnerable-dependency alert | `mode-dependency-alert.md` |
+| 13 | Threat-model explorer | `mode-threat-model-visualize.md` |
 
 Modes 1 and 3 perform the single self-contained audit in `core-scan.md`. Mode 2
 invokes `phase-1-threat-model.md` → `phase-2-discovery.md` →
@@ -69,8 +78,11 @@ python3 $CXSEC_HOME/scripts/finalize_scan_contract.py \
   --scan-dir <scan_dir> --source-root <repo_root>
 ```
 
-Author `scan-manifest.json`, `findings.json`, and `coverage.json` in `<scan_dir>`
-as an **unsealed draft**: omit `scan.sealedAt` and `scan.artifacts`, and omit each
+Author `scan-manifest.json` and `findings.json` in `<scan_dir>` as an **unsealed
+draft**, with review state (surfaces, exclusions, deferred work) in
+`scan.reviewState`; finalization seals it down to `scan.review`. New scans write no
+`coverage.json` (legacy bundles that reference one still validate). In the draft,
+omit `scan.sealedAt` and `scan.artifacts`, and omit each
 finding's `findingId`, `occurrenceId`, and `fingerprints`. The finalizer derives
 those deterministically. Supplying them by hand fails validation.
 
@@ -216,6 +228,31 @@ candidates, and keeps per-candidate ledgers.
 That is why a repository scan in this port no longer writes `rank_input.jsonl`,
 `work_ledger.jsonl`, or `candidate_ledger.jsonl`. Those files are diff-scan
 artifacts now.
+
+## Upstream 0.9.1 changes
+
+Ported from npm-v0.6.0 → npm-v0.9.1:
+
+- **Review state replaces coverage.json.** Drafts carry `scan.reviewState`; the
+  sealed manifest keeps only `scan.review.excludedPaths`. `coverage.json` is read
+  only through a legacy manifest's `scan.coverageRef`. Run-level diagnostics go in
+  `scan.warnings`, which reach SARIF `toolExecutionNotifications`.
+- **Deep scan** drops the reducer tool: rounds are merged by upstream's
+  repair-comparison rule, the first round's threat model is kept, empty targets are
+  rejected by `check_deep_scan_target.py`, and later rounds see already-reported
+  findings.
+- **Severity** grading uses the vendored `default-severity-rubric.md`.
+- **Write-up, hardening, triage, and policy** skills were rewritten upstream
+  (much shorter); this port follows them.
+- **Fix** gained trusted-tool selection and Git hook/filter isolation for patch
+  capture; patches are recorded as scan-local files by digest.
+- **New modes:** skill review (11), dependency alert (12), and threat-model
+  explorer (13, with its offline builder vendored under
+  `skills/threat-model-visualize/`).
+- **Helpers moved to TypeScript upstream** and carried here as Python:
+  `generate_in_scope_files.py`, `generate_rank_input.py`, `rank_preview.py`
+  (0.7.0), and `validate_tracking_source.py` (0.9.0). `bind_repo_scopes.py` now
+  binds into the manifest only.
 
 ## Upstream 0.6.0 changes
 

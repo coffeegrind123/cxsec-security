@@ -9,7 +9,6 @@ import os
 import stat
 import sys
 
-MAX_SECURITY_MD_BYTES = 1024 * 1024
 MISSING_ERRNOS = (errno.ENOENT, errno.ENOTDIR)
 USAGE = (
     "Concatenate the SECURITY.md files that apply to a scan path.\n\n"
@@ -129,10 +128,9 @@ def list_security_md(repo: str) -> list[str]:
 
 
 def _read_policy(path: str, displayed: str) -> str:
+    # Upstream 0.8.0 dropped the 1 MiB policy cap; every byte is read and decoded.
     with open(path, "rb") as policy_file:
-        policy_bytes = policy_file.read(MAX_SECURITY_MD_BYTES + 1)
-    if len(policy_bytes) > MAX_SECURITY_MD_BYTES:
-        raise ResolutionError(f"SECURITY.md exceeds 1 MiB: {displayed}")
+        policy_bytes = policy_file.read()
     try:
         return policy_bytes.decode("utf-8")
     except UnicodeDecodeError as exc:

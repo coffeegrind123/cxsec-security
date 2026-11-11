@@ -1,6 +1,6 @@
 """Carried resolve_security_md.py, held to upstream's current TypeScript contract.
 
-Ported from openai/codex-security 0.6.0:
+Ported from openai/codex-security 0.9.1 (originally 0.6.0):
   sdk/typescript/tests-ts/security-policy-helper.test.ts
   plugins/codex-security/mcp-app/tests/test_helper_files.ts (POSIX expandHome cases)
   sdk/typescript/tests-ts/mcp-launcher.test.ts (resolve-security-md helper cases)
@@ -644,26 +644,36 @@ def test_rejects_scope_and_policy_links_outside_repository(root: Path, output: P
         assert result.stdout == ""
 
 
-@pytest.mark.parametrize("kind", ["non-utf8", "oversized", "linked"])
-def test_rejects_non_utf8_and_oversized_regular_or_linked_policies(root: Path, kind: str) -> None:
+@pytest.mark.parametrize("kind", ["regular", "linked"])
+def test_rejects_non_utf8_regular_or_linked_policies(root: Path, kind: str) -> None:
     if kind == "linked" and not POSIX:
         pytest.skip("symlinks")
-    content = b"\xff" if kind == "non-utf8" else b"a" * (LIMIT + 1)
-    write(root, "large.md" if kind == "linked" else "SECURITY.md", content)
+    write(root, "policy.md" if kind == "linked" else "SECURITY.md", b"\xff")
     if kind == "linked":
-        (root / "SECURITY.md").symlink_to(root / "large.md")
+        (root / "SECURITY.md").symlink_to(root / "policy.md")
     result = resolve(root, ".")
     assert result.returncode == 2, result.stderr
-    assert ("not valid UTF-8" if kind == "non-utf8" else "exceeds 1 MiB") in result.stderr
+    assert "not valid UTF-8" in result.stderr
     assert result.stdout == ""
 
 
-def test_accepts_policy_exactly_at_byte_limit(root: Path) -> None:
-    content = "a" * LIMIT
-    write(root, "SECURITY.md", content)
-    result = resolve(root, ".")
+def test_resolves_complete_root_and_linked_nested_policies_larger_than_1_mib(root: Path) -> None:
+    if not POSIX:
+        pytest.skip("symlinks")
+    root_content = "root policy \u00e9\n" * 100_000 + "root policy end\n"
+    nested_content = "nested policy \u6587\n" * 100_000 + "nested policy end\n"
+    assert len(root_content.encode()) > LIMIT
+    assert len(nested_content.encode()) > LIMIT
+    write(root, "SECURITY.md", root_content)
+    write(root, "policies/component.md", nested_content)
+    (root / "component").mkdir()
+    (root / "component" / "SECURITY.md").symlink_to(root / "policies" / "component.md")
+    result = resolve(root, "component")
     assert result.returncode == 0, result.stderr
-    expect_guidance(result.stdout, [("SECURITY.md", content)])
+    expect_guidance(
+        result.stdout,
+        [("SECURITY.md", root_content), ("component/SECURITY.md", nested_content)],
+    )
 
 
 def test_preserves_required_and_mutually_exclusive_helper_arguments(root: Path) -> None:

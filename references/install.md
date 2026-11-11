@@ -32,15 +32,16 @@ Into `$CXSEC_HOME` (default `~/.claude/codex-security`), from
 
 | Directory | Contents |
 |---|---|
-| `scripts/` | Upstream's stdlib-only Python helpers (the `workbench/` subpackage included) plus two `.mjs` modules the port never runs, then the carried local additions `resolve_security_md.py`, `normalize_candidates.py`, `copy_deep_review_input.py`, and `bind_repo_scopes.py` (see `patches/README.md`). No pip install, no network calls. |
-| `schemas/` | 12 JSON Schemas for the scan contract and patch-risk assessment. |
+| `scripts/` | Upstream's stdlib-only Python helpers (the `workbench/` subpackage included) plus two `.mjs` modules the port never runs, then the carried local additions `resolve_security_md.py`, `normalize_candidates.py`, `copy_deep_review_input.py`, `bind_repo_scopes.py`, `generate_in_scope_files.py`, `generate_rank_input.py`, `rank_preview.py`, and `validate_tracking_source.py` (see `patches/README.md`). No pip install, no network calls. |
+| `schemas/` | 11 JSON Schemas for the scan contract and patch-risk assessment. |
 | `references/` | Upstream shared reference set. |
-| `examples/` | `completed-scan/` — the fixture the smoke test finalizes. |
+| `examples/` | `completed-scan/` — the fixture the smoke test finalizes; `legacy-completed-scan/` — a sealed `coverage.json` bundle the smoke test re-validates. |
 | `shared/` | Workbench migration tables. `workbench_schema.py` reads them as `<script_parent>/../shared`, so `shared/` must sit beside `scripts/`. |
+| `skills/threat-model-visualize/` | Mode 13's offline explorer builder (`scripts/build_explorer.py`), its HTML/JS/CSS shell (`assets/`), and the view-model and presentation references, vendored unchanged. |
 | `skills/assess-patch-risk/scripts/` | Mode 10's assessment validator — a carried local addition (upstream moved it into its launcher in 0.3.0), kept at its upstream depth. |
 
-Plus `LICENSE` (Apache-2.0), a generated `PROVENANCE.md`, and `patches/` holding
-the applied patch.
+Plus `LICENSE` (Apache-2.0), a generated `PROVENANCE.md`, this port's `README.md`,
+and `patches/` holding the applied patch.
 
 **Two paths are load-bearing.** `finalize_scan_contract.py` resolves schemas as
 `<script_parent>/../schemas`, so `scripts/` and `schemas/` must stay siblings;
@@ -60,7 +61,9 @@ breaks its schema lookup.
 | `SARIF rebrand patch applied` | 0 upstream branding sites, 4 `cxsec` sites in the finalizer (upstream dropped the fifth, the coverage-completeness run property, in 0.3.0). |
 | `patch-risk validator present at its load-bearing depth` | Mode 10 can find its schema. |
 | `end-to-end` | The bundled example scan, stripped back to an unsealed draft, finalizes into a sealed manifest, `report.md`, and SARIF 2.1.0 attributed to `cxsec-security`. |
-| `sealed bundle re-validates` | `validate_scan_contract.py` re-reads the whole sealed bundle — manifest, findings, coverage and the generated report — and reports `status: valid`. |
+| `sealed bundle re-validates` | `validate_scan_contract.py` re-reads the whole sealed bundle — manifest, findings, review state and the generated report — and reports `status: valid`. |
+| `legacy sealed bundle still validates` | A pre-0.9 bundle with a referenced `coverage.json` remains readable. |
+| `threat-model explorer builder runs` | Mode 13's builder starts and its `assets/` sit beside it. |
 | `patch-risk validator resolves its schema and rejects an invalid assessment` | Mode 10's validator loads the finalizer by path and its schema by depth, and actually enforces the contract. |
 
 The end-to-end check is the one that matters: it exercises schema resolution,

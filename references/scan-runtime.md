@@ -1,7 +1,8 @@
 <!-- Ported from upstream references/scan-runtime.md (0.5.0+), which replaced the
      retired capability preflight (config-preflight.md, config_preflight.py,
      preflight/capability-profiles.toml). Read once by modes 1 and 2 before source
-     review. Upstream's "Daybreak Access Advisory" section checks a ChatGPT account
+     review. Upstream's account advisory (references/access-advisory.md since 0.7.0,
+     previously the "Daybreak Access Advisory" section) checks a hosted account
      through a plugin MCP tool and has no equivalent here. -->
 
 # Scan Runtime

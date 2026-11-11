@@ -11,11 +11,15 @@
 set -euo pipefail
 
 UPSTREAM_REPO="openai/codex-security"
-PINNED_VERSION="0.6.0"
-PINNED_SHA="13dcc6fec00aaf4c23a6fa7e375ccc1726b22836"
+PINNED_VERSION="0.9.1"
+PINNED_SHA="fe1089ab514599931ff0ce77a82dc8c4a99201ea"
 SRC_SUBDIR="plugins/codex-security"
 # shared/ must sit beside scripts/: workbench_schema.py reads ../shared/*.json at import.
 VENDOR_DIRS=(scripts schemas references examples shared)
+# Offline parts of upstream skills that modes run directly. Upstream SKILL.md and
+# agents/ are left out: the mode reference in this repo replaces them.
+VENDOR_DIRS+=(skills/threat-model-visualize/scripts skills/threat-model-visualize/assets
+             skills/threat-model-visualize/references)
 PATCH_NAME="0001-rebrand-sarif-output.patch"
 # Sites the rebrand patch renames in finalize_scan_contract.py.
 PATCH_SITES=4
@@ -154,6 +158,14 @@ check_layout() {
   else
     warn "skills/assess-patch-risk/scripts/ absent — mode 10 cannot validate an assessment (--force restores it)"
   fi
+  # Mode 13 builds its explorer from scripts/ plus sibling assets/ (parents[1]).
+  local tmv="$CXSEC_HOME/skills/threat-model-visualize"
+  if [ -f "$tmv/scripts/build_explorer.py" ] && [ -f "$tmv/assets/explorer.html" ] \
+     && "$PY" "$tmv/scripts/build_explorer.py" --help >/dev/null 2>&1; then
+    ok "threat-model explorer builder runs, assets beside it"
+  else
+    warn "skills/threat-model-visualize/ incomplete — mode 13 cannot build an explorer (--force restores it)"
+  fi
   [ -f "$CXSEC_HOME/LICENSE" ] && ok "LICENSE present" || warn "LICENSE absent — this runtime is Apache-2.0, ship the license"
 }
 
@@ -161,7 +173,7 @@ check_scripts() {
   local s
   for s in finalize_scan_contract.py validate_scan_contract.py \
            report_projection.py validate_tracking_source.py normalize_candidates.py \
-           generate_in_scope_files.py generate_rank_input.py resolve_security_md.py \
+           generate_in_scope_files.py generate_rank_input.py rank_preview.py resolve_security_md.py \
            copy_deep_review_input.py bind_repo_scopes.py threat_model_projection.py; do
     if [ -f "$CXSEC_HOME/scripts/$s" ]; then
       if "$PY" "$CXSEC_HOME/scripts/$s" --help >/dev/null 2>&1; then
@@ -198,8 +210,11 @@ check_smoke() {
   fi
   local tmp
   tmp="$(mktmp)"
-  cp "$ex"/scan-manifest.json "$ex"/findings.json "$ex"/coverage.json "$tmp/" 2>/dev/null || {
+  # Current bundles carry review state in the manifest; coverage.json exists only in
+  # legacy bundles (scan.coverageRef), so copy it when present and never require it.
+  cp "$ex"/scan-manifest.json "$ex"/findings.json "$tmp/" 2>/dev/null || {
     bad "example scan is incomplete"; return; }
+  [ -f "$ex/coverage.json" ] && cp "$ex/coverage.json" "$tmp/"
 
   "$PY" - "$tmp" <<'PY' || { bad "could not build an unsealed draft from the example scan"; return; }
 import json, pathlib, sys
@@ -261,7 +276,25 @@ PY
     sed 's/^/         /' "$tmp/validate.log" >&2
   fi
 
+  check_legacy_example
   check_patch_risk_validator "$tmp"
+}
+
+# Sealed bundles written before review state moved into the manifest must stay
+# readable: re-validate upstream's legacy example (manifest + coverage.json) as-is.
+check_legacy_example() {
+  local ex="$CXSEC_HOME/examples/legacy-completed-scan"
+  [ -d "$ex" ] || { warn "examples/legacy-completed-scan absent — legacy compatibility not checked"; return; }
+  local tmp
+  tmp="$(mktmp)"
+  cp -a "$ex"/. "$tmp"/
+  if "$PY" "$CXSEC_HOME/scripts/validate_scan_contract.py" --scan-dir "$tmp" >"$tmp/validate.log" 2>&1 \
+     && grep -q '"status": *"valid"' "$tmp/validate.log"; then
+    ok "legacy sealed bundle (coverage.json) still validates"
+  else
+    bad "legacy sealed bundle fails validate_scan_contract.py:"
+    sed 's/^/         /' "$tmp/validate.log" >&2
+  fi
 }
 
 # Mode 10's validator loads finalize_scan_contract.py by path and resolves the schema as
@@ -322,6 +355,7 @@ stage_from_local() {
   local d
   for d in "${VENDOR_DIRS[@]}"; do
     if [ -d "$LOCAL_SRC/$d" ]; then
+      mkdir -p "$(dirname "$stage/$d")"
       cp -a "$LOCAL_SRC/$d" "$stage/$d"
       find "$stage/$d" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
       ok "$d/ ($(find "$stage/$d" -type f | wc -l) files)"
@@ -373,6 +407,7 @@ fetch_and_stage() {
   local d
   for d in "${VENDOR_DIRS[@]}"; do
     if [ -d "$src/$d" ]; then
+      mkdir -p "$(dirname "$stage/$d")"
       cp -a "$src/$d" "$stage/$d"
       ok "$d/ ($(find "$stage/$d" -type f | wc -l) files)"
     else
@@ -478,7 +513,9 @@ that validates scan-contract artifacts and deterministically generates \`report.
 and SARIF 2.1.0. It makes no network calls and needs no OpenAI credentials.
 
 The upstream MCP server (\`mcp-app/\`) and the Codex-CLI-driven
-\`deep-security-scan\` worker fan-out are deliberately NOT vendored.
+\`deep-security-scan\` worker fan-out are deliberately NOT vendored. The offline
+explorer builder, assets and references of \`skills/threat-model-visualize\` are
+vendored unchanged for mode 13.
 
 Layout is load-bearing: \`finalize_scan_contract.py\` resolves schemas as
 \`<script_parent>/../schemas\`, so \`scripts/\` and \`schemas/\` must stay siblings.
@@ -496,7 +533,8 @@ The vendored code is **not** a pristine copy. See \`patches/README.md\`.
   standalone helper. This port does not vendor the MCP app, so it keeps the last
   upstream Python version (byte-identical 0.1.24–0.1.26), which mode 7 and the
   repo-scan policy chain invoke. Self-contained stdlib; same concatenation
-  semantics the TS helper documents.
+  semantics the TS helper documents, and it tracks the current TS resolver (no
+  1 MiB policy cap since 0.8.0).
 - \`scripts/normalize_candidates.py\` — a carried-forward local addition. Upstream
   ported diff-scan candidate normalization into the MCP app in 0.2.0 and deleted
   the Python helper. Kept at its last upstream version with the later TypeScript
@@ -511,6 +549,19 @@ The vendored code is **not** a pristine copy. See \`patches/README.md\`.
   local additions. Upstream retired these \`generate_rank_input.py\` subcommands
   (\`copy-deep-review-input\`, \`bind-repo-scopes\`) into the MCP launcher in 0.3.0.
   Re-implemented from the TypeScript helpers; same CLI and output format.
+  \`bind_repo_scopes.py\` binds into the manifest only, as the 0.9.x helper does.
+- \`scripts/generate_in_scope_files.py\`, \`scripts/generate_rank_input.py\`
+  (\`make-repo-scope-input\`, \`make-diff-rank-input\`), \`scripts/rank_preview.py\` —
+  carried-forward local additions. Upstream moved inventory, ranking and preview
+  generation into its MCP launcher in 0.7.0 and deleted the Python. Kept at their
+  last upstream versions with the later TypeScript behaviour ported back (trusted,
+  sanitised Git; whole-file binary sampling; empty-\`.git\` placeholders; reported Git
+  listing failures). Same CLIs and output formats.
+- \`scripts/validate_tracking_source.py\` — a carried-forward local addition. Upstream
+  moved the tracking preflight into its MCP launcher in 0.9.0. It delegates to the
+  vendored \`validate_scan_contract.py\`, which upstream's TypeScript tracking reader
+  mirrors, and adds home expansion, scan-directory canonicalisation and escaped
+  one-line diagnostics. Same CLI.
 
 All carried helpers are held to upstream's current TypeScript test suites, ported to
 pytest under the skill repo's \`tests/\`.
@@ -549,9 +600,13 @@ do_install() {
       mv "$CXSEC_HOME/$d" "$backup"
       warn "existing $d/ moved to $(basename "$backup")"
     fi
+    mkdir -p "$(dirname "$CXSEC_HOME/$d")"
     cp -a "$stage/$d" "$CXSEC_HOME/$d"
   done
   if [ -f "$stage/LICENSE" ]; then cp -a "$stage/LICENSE" "$CXSEC_HOME/LICENSE"; fi
+  # SKILL.md points readers at $CXSEC_HOME/README.md for what this port changed; it is
+  # this repo's file, not upstream's, so it comes from runtime/ on every install path.
+  if [ -f "$LOCAL_SRC/README.md" ]; then cp "$LOCAL_SRC/README.md" "$CXSEC_HOME/README.md"; fi
   ok "vendored ${VENDOR_DIRS[*]}"
 
   apply_patch

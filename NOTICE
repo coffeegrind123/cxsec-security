@@ -5,8 +5,8 @@ This product includes software and documentation derived from
 codex-security (https://github.com/openai/codex-security),
 Copyright OpenAI, licensed under the Apache License, Version 2.0.
 
-Derived from upstream release npm-v0.6.0, commit
-13dcc6fec00aaf4c23a6fa7e375ccc1726b22836, source path plugins/codex-security.
+Derived from upstream release npm-v0.9.1, commit
+fe1089ab514599931ff0ce77a82dc8c4a99201ea, source path plugins/codex-security.
 (Upstream relocated the plugin from sdk/typescript/_bundled_plugin at 0.1.16+.)
 
 Modifications made to the upstream work
@@ -42,14 +42,37 @@ Documentation and skill definitions (SKILL.md, references/):
     replaced skills/threat-model/references/threat-model-guidance.md.
   * references/mode-patch-risk.md and references/risk-rubric.md are upstream
     skills/assess-patch-risk, added in 0.1.16+.
+  * Scan references follow upstream's 0.9.x contract: new scans author review
+    state as scan.reviewState in the unsealed manifest (sealed to scan.review)
+    instead of coverage.json, which remains readable for legacy bundles.
+    references/workbench-file-protocol.md maps upstream's artifact-storage.md
+    persistent and temporary storage to direct writes under <scan_dir> and to
+    scratch space outside the target. Deep rounds are merged with upstream's
+    repair-comparison rule in place of the retired reducer tool.
   * references/scan-runtime.md is upstream references/scan-runtime.md, adapted to
     Claude Code delegation, with its ChatGPT access advisory removed. It replaces
     the capability preflight upstream retired in 0.5.0.
   * references/mode-fix.md also carries upstream skills/verify-fix as its
-    Verify-Only section.
+    Verify-Only section. Its remediation stages keep upstream's trusted-tool
+    selection, Git hook and filter isolation, and private-repository capture,
+    with the workbench remediation setter replaced by a scan-local patch file
+    recorded by path and SHA-256 digest.
+  * references/mode-skill-review.md, mode-dependency-alert.md and
+    mode-threat-model-visualize.md are upstream skills/check-skills,
+    skills/resolve-dependency-alert and skills/threat-model-visualize, added in
+    0.7.0+. Links to publish-findings and fix-finding point at this port's
+    modes; the visualizer's fresh-context reviewer is a new Agent subagent, and
+    its Codex in-app browser and Sites publishing steps are generalized.
+  * references/mode-writeup.md, report-format.md, mode-harden.md and
+    proposal-format.md follow upstream's 0.9.x rewrites of those skills, with
+    artifact-storage.md's managed-storage tools replaced by the scan directory
+    and the target's security_scans_dir.
 
 Runtime layout (runtime/):
 
+  * skills/threat-model-visualize/{scripts,assets,references} are vendored
+    unchanged so mode 13 can run the offline explorer builder; upstream's
+    SKILL.md and agents/ for that skill are not vendored.
   * skills/assess-patch-risk/scripts/validate_patch_risk_assessment.py is kept
     at its upstream depth rather than flattened into scripts/, because it
     resolves the plugin root as parents[3].
@@ -61,10 +84,12 @@ Runtime code (runtime/):
     partialFingerprints namespace, and two run.properties keys. Generated SARIF
     is attributed to cxsec-security.
   * Carried Python helpers (assets/local-additions/, installed into the runtime):
-    resolve_security_md.py, normalize_candidates.py and the patch-risk validator
-    are upstream Python that upstream later deleted; copy_deep_review_input.py and
-    bind_repo_scopes.py re-implement retired generate_rank_input.py subcommands.
-    All five were modified to follow upstream's later TypeScript implementations.
+    resolve_security_md.py, normalize_candidates.py, the patch-risk validator,
+    generate_in_scope_files.py, generate_rank_input.py, rank_preview.py and
+    validate_tracking_source.py are upstream Python that upstream later deleted;
+    copy_deep_review_input.py and bind_repo_scopes.py re-implement retired
+    generate_rank_input.py subcommands. All nine were modified to follow
+    upstream's later TypeScript implementations.
   * No other functional change to vendored code. Canonical wire literals (codex-security.*
     documentTypes, the codex-security/v1 fingerprint algorithm, and the
     codex-security-snapshot/v1 digest prefix) are deliberately unchanged so that
@@ -77,10 +102,13 @@ Not included from upstream
   * the Codex-CLI-driven deep-security-scan coordinator
   * agents/openai.yaml
   * references/desktop-scan.md, references/standalone-validation.md, and the
-    ChatGPT access advisory (Codex desktop app, MCP server, and hosted account
-    only)
-  * skills/publish-findings and skills/cloud-findings (codex-security CLI and
-    Codex Security Cloud only)
+    ChatGPT access advisory, now references/access-advisory.md (Codex desktop
+    app, MCP server, and hosted account only)
+  * skills/assess-patch-risk/references/windows-validation.md (the Windows
+    invocation of the TypeScript launcher; the carried Python validator runs
+    the same way on every OS)
+  * skills/publish-findings, including its Checkmarx and Wiz importers, and
+    skills/cloud-findings (codex-security CLI and Codex Security Cloud only)
   * tests/, plugin-files.json, pyproject.toml, requirements-test.txt
 
 Additions original to this work

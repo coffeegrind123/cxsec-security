@@ -46,6 +46,20 @@ FIELDS = {
 }
 
 
+def escape_controls(text: str) -> str:
+    """Escape Unicode control and format characters like the TypeScript helper."""
+    import unicodedata
+
+    def escape(character: str) -> str:
+        point = ord(character)
+        return f"\\u{{{point:x}}}" if point > 0xFFFF else f"\\u{point:04x}"
+
+    return "".join(
+        escape(character) if unicodedata.category(character) in ("Cc", "Cf") else character
+        for character in text
+    )
+
+
 def js_trim(value: str) -> str:
     return value.strip(JS_WHITESPACE)
 
@@ -395,7 +409,15 @@ def main() -> None:
             temporary.replace(output)
         finally:
             if temporary is not None:
-                temporary.unlink(missing_ok=True)
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError as cleanup_error:
+                    # A leftover temporary file must not fail a completed write.
+                    print(
+                        "normalize_candidates: Could not remove temporary file: "
+                        + escape_controls(str(cleanup_error)),
+                        file=sys.stderr,
+                    )
         print(f"Combined {len(rows)} candidate rows into {len(combined)} rows in {output}")
     except (OSError, ValueError) as error:
         print(f"normalize_candidates: {error}", file=sys.stderr)
